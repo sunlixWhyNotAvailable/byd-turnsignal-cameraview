@@ -11,7 +11,7 @@ final class UpdateResultPresentation {
     private long activeAttempt;
     private boolean displayReady;
 
-    boolean accept(String id, boolean fresh, boolean ownUiVisible,
+    boolean accept(String id, boolean fresh,
             boolean enabled, boolean overlayGranted) {
         if (id == null) {
             if (fresh) invalidate();
@@ -22,11 +22,14 @@ final class UpdateResultPresentation {
         offerPending = true;
         cancelHint();
         failures = 0;
-        hintPending = !ownUiVisible && enabled && overlayGranted;
+        hintPending = enabled && overlayGranted;
         return hintPending;
     }
 
     boolean hasPendingOffer() { return offerPending; }
+    void resumeShown(String id) {
+        if (hasOffer(id)) { hintPending = true; pauseAttempt(); }
+    }
     boolean hasPendingHint() { return hintPending; }
     boolean isAttempting() { return activeAttempt != 0L; }
     int failureCount() { return failures; }

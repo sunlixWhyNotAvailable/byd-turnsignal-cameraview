@@ -40,7 +40,8 @@ object UpdateHintOverlay {
         val eventId: String,
         val attemptId: Long,
         val requestId: Long,
-        val requestedAtElapsedNanos: Long
+        val requestedAtElapsedNanos: Long,
+        val durationMs: Long = DISPLAY_DURATION_MS
     ) {
         var outcome: DeliveryOutcome? = null
             private set
@@ -57,6 +58,7 @@ object UpdateHintOverlay {
     private var callback: Callback? = null
     private var deliveryCallback: DeliveryCallback? = null
     private var activeAttempt: DeliveryAttempt? = null
+    private var eligible = false
     private var appContext: Context? = null
     private var windowContext: Context? = null
     private var windows: WindowManager? = null
@@ -110,6 +112,7 @@ object UpdateHintOverlay {
         val display = try {
             displays?.getDisplay(activeDisplayId)
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "display_refresh_failed event=${eventId}", error)
             failOrDismiss("display_refresh_failed")
             return@Runnable
@@ -133,6 +136,7 @@ object UpdateHintOverlay {
                 abs(density - availableDensity) > 0.0001f
             ) refreshAppearanceMain()
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "display_refresh_failed event=${eventId}", error)
             failOrDismiss("display_refresh_failed")
         }
@@ -151,10 +155,10 @@ object UpdateHintOverlay {
     }
 
     @JvmStatic
-    fun show(context: Context, eventId: String, version: String, attemptId: Long) {
+    fun show(context: Context, eventId: String, version: String, attemptId: Long, durationMs: Long) {
         val request = requestGeneration.incrementAndGet()
         val attempt = DeliveryAttempt(
-            eventId, attemptId, request, SystemClock.elapsedRealtimeNanos()
+            eventId, attemptId, request, SystemClock.elapsedRealtimeNanos(), durationMs
         )
         val application = context.applicationContext
         val action = Runnable {
@@ -179,6 +183,19 @@ object UpdateHintOverlay {
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) action.run() else handler.post(action)
+    }
+
+    /** Main-thread suspension preserves only time actually left on screen, not wall-clock darkness. */
+    @JvmStatic
+    fun setEligible(value: Boolean): Long {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        eligible = value
+        if (value) return -1L
+        val remaining = if (root != null) UpdateHintLifetime.remainingMs(
+            deadlineElapsedMs, SystemClock.elapsedRealtime()
+        ) else -1L
+        if (activeAttempt != null) hide("eligibility_wait")
+        return remaining
     }
 
     @JvmStatic
@@ -219,6 +236,10 @@ object UpdateHintOverlay {
 
         activeAttempt = attempt
         appContext = context
+        if (!eligible) {
+            finishAttempt(attempt, DeliveryOutcome.DEFERRED, "eligibility_wait")
+            return
+        }
         if (newEventId.isBlank() || newVersion.isBlank()) {
             finishAttempt(attempt, DeliveryOutcome.FAILED, "invalid_result")
             Log.w(TAG, "show_failed reason=invalid_result")
@@ -328,6 +349,7 @@ object UpdateHintOverlay {
                 newAppearance.sizePercent, width, height
             )
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "show_failed event=$newEventId reason=${error.javaClass.simpleName}")
             finishAttempt(attempt, DeliveryOutcome.FAILED, "show_failed")
         }
@@ -368,6 +390,10 @@ object UpdateHintOverlay {
     }
 
     private fun attach(attempt: DeliveryAttempt, target: UpdateHintLayout.Placement) {
+        if (!eligible) {
+            finishAttempt(attempt, DeliveryOutcome.DEFERRED, "eligibility_wait")
+            return
+        }
         if (activeAttempt !== attempt) {
             reportDelivery(attempt, DeliveryOutcome.CANCELLED)
             return
@@ -400,6 +426,7 @@ object UpdateHintOverlay {
                 return
             }
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "attach_preflight_failed event=${attempt.eventId}", error)
             finishAttempt(attempt, DeliveryOutcome.FAILED, "attach_preflight_failed")
             return
@@ -464,6 +491,7 @@ object UpdateHintOverlay {
             activeGeneration = ++generation
             manager.addView(frame, layoutParams)
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "show_failed event=${eventId} reason=${error.javaClass.simpleName}")
             finishAttempt(attempt, DeliveryOutcome.FAILED, "attach_failed")
             return
@@ -477,6 +505,7 @@ object UpdateHintOverlay {
             startVisibleLifetime(context, currentCard, activeGeneration)
             frame.requestApplyInsets()
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "post_attach_failed event=${attempt.eventId}", error)
             finishAttempt(attempt, DeliveryOutcome.FAILED, "post_attach_failed")
             return
@@ -490,17 +519,20 @@ object UpdateHintOverlay {
         activeGeneration: Long
     ) {
         val shownElapsedMs = SystemClock.elapsedRealtime()
-        deadlineElapsedMs = UpdateHintLifetime.deadlineAfter(shownElapsedMs, DISPLAY_DURATION_MS)
+        val durationMs = activeAttempt?.durationMs ?: DISPLAY_DURATION_MS
+        deadlineElapsedMs = UpdateHintLifetime.deadlineAfter(shownElapsedMs, durationMs)
         scheduleExpiry(activeGeneration, UpdateHintLifetime.remainingMs(
             deadlineElapsedMs, shownElapsedMs
         ))
-        UpdateHintCoordinator.get(context).markVisible(shownElapsedMs)
+        UpdateHintCoordinator.get(context).markVisible(shownElapsedMs, durationMs)
         currentCard.animate()
             .translationX(0f)
             .setDuration(ANIMATION_DURATION_MS)
             .setInterpolator(DecelerateInterpolator())
             .start()
         Log.i(TAG, "shown event=${eventId} scale=$effectiveScalePercent")
+        AvasRecoveryJournal.event(context, "update_hint_shown", "source", "update_runtime",
+            "result", eventId, "visible_remaining_ms", durationMs)
     }
 
     private fun scheduleExpiry(activeGeneration: Long, delayMs: Long) {
@@ -539,6 +571,7 @@ object UpdateHintOverlay {
         try {
             deliveryCallback?.onDelivery(attempt.eventId, attempt.attemptId, actualOutcome)
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "delivery_callback_failed event=${attempt.eventId}", error)
         }
     }
@@ -617,6 +650,7 @@ object UpdateHintOverlay {
             effectiveScalePercent = scalePercent
             appliedScale = scale
         } catch (error: RuntimeException) {
+            recordFailure(error)
             animator?.cancel()
             Log.w(TAG, "layout_failed event=${eventId} reason=${error.javaClass.simpleName}")
             dismissMain("layout_failed", true)
@@ -628,6 +662,7 @@ object UpdateHintOverlay {
         try {
             refreshAppearance(context)
         } catch (error: RuntimeException) {
+            recordFailure(error)
             Log.w(TAG, "appearance_refresh_failed event=${eventId}", error)
             failOrDismiss("appearance_refresh_failed")
         }
@@ -684,6 +719,7 @@ object UpdateHintOverlay {
             try {
                 manager.updateViewLayout(frame, layout)
             } catch (error: RuntimeException) {
+                recordFailure(error)
                 Log.w(TAG, "appearance_failed event=${eventId} reason=${error.javaClass.simpleName}")
                 dismissMain("appearance_failed", true)
                 return
@@ -758,10 +794,13 @@ object UpdateHintOverlay {
             try {
                 manager.removeViewImmediate(frame)
             } catch (error: RuntimeException) {
+                recordFailure(error)
                 Log.w(TAG, "remove_failed reason=${error.javaClass.simpleName}")
             }
         }
         appContext?.let {
+            if (dismissedEvent != null) AvasRecoveryJournal.event(it, "update_hint_closed",
+                "source", "update_runtime", "result", dismissedEvent, "reason", reason)
             val coordinator = UpdateHintCoordinator.get(it)
             coordinator.setListener(null)
             if (publishNone) coordinator.clear(reason)
@@ -771,6 +810,10 @@ object UpdateHintOverlay {
         activeAttempt = null
     }
 
+    private fun recordFailure(error: RuntimeException) {
+        appContext?.let { AvasRecoveryJournal.event(it, "update_hint_error", "source", "update_runtime",
+            "detail", CellularRecovery.diagnosticDetail(error, "operation=update_hint result=$eventId")) }
+    }
     private fun windowFlags(): Int = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or

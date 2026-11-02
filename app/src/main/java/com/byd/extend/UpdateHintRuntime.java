@@ -19,9 +19,6 @@ import android.view.Display;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -36,9 +33,20 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService checks = Executors.newSingleThreadExecutor();
     private final ExecutorService downloads = Executors.newSingleThreadExecutor();
+    private final ExecutorService screenReads = Executors.newSingleThreadExecutor();
+    private CameraRuntimeClient displayReader;
+    private boolean screenReadActive;
+    private long screenEpoch;
+    private boolean vehiclePowerKnown;
+    private boolean vehiclePowerOff;
+    private boolean physicalScreenVisible;
+    private boolean eligible;
+    private long hintRemainingMs = 10_000L;
+    private String lastScreenDiagnostic;
+    private String lastOfferDecision;
+    private final Runnable pollDisplay = this::reconcileDisplay;
     private final AppUpdateManager manager = new AppUpdateManager();
     private final UpdateResultPresentation presentation = new UpdateResultPresentation();
-    private final Set<Activity> started = Collections.newSetFromMap(new IdentityHashMap<>());
     private WeakReference<CheckListener> listener = new WeakReference<>(null);
     private final Object downloadLock = new Object();
     private WeakReference<DownloadListener> downloadListener = new WeakReference<>(null);
@@ -55,8 +63,10 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     private final BroadcastReceiver wakeReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                autoCheck.sleep();
-                pauseHintForDisplay();
+                screenEpoch++;
+                physicalScreenVisible = false;
+                applyEligibility();
+                reconcileDisplay();
             } else runtimeWake(intent.getAction());
         }
     };
@@ -73,6 +83,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         void onCheckStarted(boolean force);
         void onCheckDiscarded();
         void onCheckFinished(AppUpdateManager.UpdateInfo available, Throwable error, boolean force);
+        default void onUpdateEligibilityChanged() {}
     }
 
     interface DownloadListener {
@@ -155,11 +166,12 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         preferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
         autoCheck = new UpdateAutoCheckRuntime(main::postDelayed, main::removeCallbacks,
                 () -> preferences.getBoolean(PREF_AUTO_CHECK, true), this::startCheck,
-                detail -> Log.i("UpdateHintRuntime", "update_check " + detail));
+                detail -> diagnostic("check", detail));
         settingsListener = (prefs, key) -> {
             // SharedPreferences dispatches on main: do not coalesce a rapid OFF/ON pair.
             if (PREF_AUTO_CHECK.equals(key)) {
                 autoCheck.refresh();
+                reconcileDisplay();
                 return;
             }
             if (PREF_ENABLED.equals(key) && !enabled()) {
@@ -182,7 +194,6 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         shutdown = GuardRecovery.isUserShutdownActive(context);
         if (shutdown) autoCheck.shutdown();
         if (displays != null) displays.registerDisplayListener(displayListener, main);
-        autoCheck.onDisplayState(displayReady());
         autoCheck.refresh();
     }
 
@@ -355,6 +366,12 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     }
 
     private void startCheck(UpdateAutoCheckRuntime.Request request) {
+        if (request.manual) {
+            screenEpoch++;
+            physicalScreenVisible = false;
+            applyEligibility();
+        }
+        reconcileDisplay();
         CheckListener startedObserver = listener.get();
         if (startedObserver != null) startedObserver.onCheckStarted(request.manual);
         checks.execute(() -> {
@@ -366,7 +383,13 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
             final Throwable error = failure;
             main.post(() -> {
                 CheckListener observer = listener.get();
-                if (!autoCheck.complete(request, error == null && completed != null)) {
+                boolean accepted = autoCheck.complete(request, error == null && completed != null);
+                diagnostic("check_result", "request=" + request.id + " accepted=" + accepted
+                        + " result=" + (error != null ? "error"
+                        : completed != null && completed.available != null ? "available" : "none")
+                        + " version=" + (completed != null && completed.available != null ? completed.available.version : "none")
+                        + (error == null ? "" : "\n" + CellularRecovery.diagnosticDetail(error, "operation=release_check")));
+                if (!accepted) {
                     manualCheckDialogRequested = false;
                     if (observer != null) observer.onCheckDiscarded();
                     return;
@@ -378,7 +401,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                     }
                     presentation.accept(
                             completed.available == null ? null : completed.available.resultId,
-                            completed.fresh, !started.isEmpty(), enabled(),
+                            completed.fresh, enabled(),
                             Settings.canDrawOverlays(context));
                     if (request.manual && !manualCheckDialogRequested
                             && completed.available != null) {
@@ -387,8 +410,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                     queuePendingHint();
                 }
                 if (request.manual) manualCheckDialogRequested = false;
-                Log.i("UpdateHintRuntime", "check_finished result=" + (error != null ? "error"
-                        : completed != null && completed.available != null ? "available" : "none"));
+                reconcileDisplay();
                 if (observer != null) observer.onCheckFinished(
                         completed == null ? null : completed.available, error, request.manual);
             });
@@ -432,8 +454,19 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     }
 
     AppUpdateManager.UpdateInfo pendingOffer() {
+        return eligible ? manualOffer() : null;
+    }
+
+    AppUpdateManager.UpdateInfo manualOffer() {
         return !isChecking() && available != null && presentation.hasOffer(available.resultId)
                 ? available : null;
+    }
+
+    void offerDecision(String reason) {
+        String detail = "result=" + (available == null ? "none" : available.resultId) + " reason=" + reason;
+        if (detail.equals(lastOfferDecision)) return;
+        lastOfferDecision = detail;
+        diagnostic("offer", detail);
     }
 
     void consume(String resultId) {
@@ -458,11 +491,15 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
                     .putExtra(EXTRA_RESULT_ID, resultId));
         } catch (RuntimeException error) {
             Log.w("UpdateHintRuntime", "open_failed", error);
+            diagnostic("open_failed", CellularRecovery.diagnosticDetail(error, "operation=open_update_offer"));
         }
     }
 
     void shutdown() {
         shutdown = true;
+        screenEpoch++;
+        main.removeCallbacks(pollDisplay);
+        applyEligibility();
         autoCheck.shutdown();
         presentation.invalidate();
         available = null;
@@ -470,6 +507,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     }
 
     private void hide(String reason) {
+        hintRemainingMs = 10_000L;
         main.removeCallbacks(deliverHint);
         if (presentation.cancelHint()) hintEvent("cancelled reason=" + reason);
         waitingForDisplay = false;
@@ -477,27 +515,128 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
     }
 
     static void onRuntimeWake(Context context, String action) {
-        get(context).runtimeWake(action);
+        UpdateHintRuntime runtime = get(context);
+        runtime.main.post(() -> runtime.runtimeWake(action));
     }
 
     private void runtimeWake(String action) {
         if (shutdown || GuardRecovery.isUserShutdownActive(context)
                 || LegacySettingsImporter.blocksRuntime(context)) return;
         reconcileDisplay();
-        autoCheck.wake(action);
+        diagnostic("wake", "action=" + action);
     }
 
-    private boolean displayReady() {
+    private boolean androidDisplayReady() {
         Display display = displays == null ? null : displays.getDisplay(Display.DEFAULT_DISPLAY);
         return display != null && display.getState() == Display.STATE_ON;
     }
 
     private void reconcileDisplay() {
-        boolean ready = displayReady();
-        if (!shutdown && !GuardRecovery.isUserShutdownActive(context)
-                && !LegacySettingsImporter.blocksRuntime(context)) autoCheck.onDisplayState(ready);
-        if (ready) UpdateHintOverlay.reconcileExpiry();
+        main.removeCallbacks(pollDisplay);
+        if (!observeDisplay() || screenReadActive) { applyEligibility(); return; }
+        CameraRuntimeClient reader = displayReader;
+        if (reader == null) {
+            screenObserved(null, "Display reader not attached", screenEpoch);
+            return;
+        }
+        screenReadActive = true;
+        long epoch = screenEpoch;
+        screenReads.execute(() -> {
+            Bundle state = null;
+            String failure = null;
+            try { state = reader.readUpdateDisplayState(); }
+            catch (Exception error) { failure = CellularRecovery.diagnosticDetail(error, "operation=update_display_ipc"); }
+            Bundle observed = state;
+            String error = failure;
+            main.post(() -> {
+                screenReadActive = false;
+                screenObserved(observed, error, epoch);
+            });
+        });
+    }
+
+    void setDisplayReader(CameraRuntimeClient reader) {
+        main.post(() -> {
+            displayReader = reader;
+            vehiclePowerKnown = false;
+            screenEpoch++;
+            physicalScreenVisible = false;
+            applyEligibility();
+            reconcileDisplay();
+        });
+    }
+
+    void clearDisplayReader(CameraRuntimeClient reader) {
+        main.post(() -> {
+            if (displayReader != reader) return;
+            displayReader = null;
+            vehiclePowerKnown = false;
+            physicalScreenVisible = false;
+            screenEpoch++;
+            main.removeCallbacks(pollDisplay);
+            applyEligibility();
+        });
+    }
+
+    void vehiclePowerChanged(CameraRuntimeClient source, boolean known, boolean off) {
+        main.post(() -> {
+            if (displayReader != source) return;
+            if (vehiclePowerKnown == known && vehiclePowerOff == off) return;
+            vehiclePowerKnown = known;
+            vehiclePowerOff = off;
+            screenEpoch++;
+            physicalScreenVisible = false;
+            diagnostic("vehicle_power", "known=" + known + " off=" + off);
+            applyEligibility();
+            reconcileDisplay();
+        });
+    }
+
+    private boolean observeDisplay() {
+        return !shutdown && vehiclePowerKnown && !vehiclePowerOff
+                && (preferences.getBoolean(PREF_AUTO_CHECK, true) || autoCheck.isChecking()
+                || presentation.hasPendingOffer());
+    }
+
+    private void screenObserved(Bundle state, String failure, long epoch) {
+        if (epoch == screenEpoch) {
+            physicalScreenVisible = state != null && state.getBoolean("known") && state.getBoolean("visible");
+            String detail = failure != null ? failure : state == null ? "Display snapshot missing"
+                    : "known=" + state.getBoolean("known") + " visible=" + state.getBoolean("visible")
+                    + " display=" + state.getInt("display", -1) + " backlight=" + state.getInt("backlight", -1)
+                    + " cover=" + state.getString("cover", "") + " capability=" + state.getString("capability", "oem")
+                    + " capability_detail=" + state.getString("capability_detail", "")
+                    + " error=" + state.getString("error", "");
+            if (!detail.equals(lastScreenDiagnostic)) {
+                lastScreenDiagnostic = detail;
+                diagnostic("screen", detail);
+            }
+            applyEligibility();
+        }
+        if (observeDisplay()) main.postDelayed(pollDisplay, epoch == screenEpoch ? 1_000L : 0L);
+    }
+
+    private void applyEligibility() {
+        boolean next = UpdateDisplayState.eligible(vehiclePowerKnown, vehiclePowerOff,
+                physicalScreenVisible && androidDisplayReady()) && !shutdown
+                && !GuardRecovery.isUserShutdownActive(context) && !LegacySettingsImporter.blocksRuntime(context);
+        boolean changed = eligible != next;
+        eligible = next;
+        autoCheck.setEligible(next);
+        if (!next) presentation.pauseAttempt();
+        long remaining = UpdateHintOverlay.setEligible(next);
+        if (remaining > 0L && available != null) {
+            hintRemainingMs = remaining;
+            presentation.resumeShown(available.resultId);
+        }
+        presentation.setDisplayReady(next);
         queuePendingHint();
+        if (changed) {
+            diagnostic("eligibility", "eligible=" + next + " power_known=" + vehiclePowerKnown
+                    + " power_off=" + vehiclePowerOff + " screen_visible=" + physicalScreenVisible);
+            CheckListener observer = listener.get();
+            if (observer != null) observer.onUpdateEligibilityChanged();
+        }
     }
 
     private void pauseHintForDisplay() {
@@ -515,15 +654,13 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         String reason = null;
         if (available == null || !presentation.hasOffer(available.resultId)) reason = "stale_result";
         else if (shutdown || GuardRecovery.isUserShutdownActive(context)) reason = "shutdown";
-        else if (LegacySettingsImporter.blocksRuntime(context)) reason = "startup_blocked";
-        else if (!started.isEmpty()) reason = "own_ui_visible";
         else if (!enabled()) reason = "disabled";
         else if (!Settings.canDrawOverlays(context)) reason = "overlay_permission_missing";
         if (reason != null) {
             hide(reason);
             return false;
         }
-        if (!displayReady()) {
+        if (!eligible) {
             pauseHintForDisplay();
             return false;
         }
@@ -544,7 +681,7 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         long attempt = presentation.beginAttempt(SystemClock.elapsedRealtime());
         if (attempt == 0L) return;
         hintEvent("attempt id=" + attempt + " failures=" + presentation.failureCount());
-        UpdateHintOverlay.show(context, available.resultId, available.version, attempt);
+        UpdateHintOverlay.show(context, available.resultId, available.version, attempt, hintRemainingMs);
     }
 
     private void onHintDelivery(String id, long attempt, UpdateHintOverlay.DeliveryOutcome outcome) {
@@ -566,20 +703,23 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
 
     private void hintEvent(String detail) {
         Display display = displays == null ? null : displays.getDisplay(Display.DEFAULT_DISPLAY);
-        Log.i("UpdateHintRuntime", "hint " + detail + " result="
+        diagnostic("hint", detail + " result="
                 + (available == null ? "none" : available.resultId)
                 + " display_state=" + (display == null ? "missing" : display.getState()));
     }
 
-    @Override public void onActivityStarted(Activity activity) {
-        started.add(activity);
-        shutdown = false;
-        hide("own_ui_visible");
-        autoCheck.onDisplayState(displayReady());
-        autoCheck.entry(displayReady(), presentation.hasPendingOffer());
+    private void diagnostic(String kind, String detail) {
+        Log.i("UpdateHintRuntime", kind + " " + detail);
+        AvasRecoveryJournal.event(context, "update_" + kind, "source", "update_runtime", "detail", detail);
     }
-    @Override public void onActivityStopped(Activity activity) { started.remove(activity); }
-    @Override public void onActivityDestroyed(Activity activity) { started.remove(activity); }
+
+    @Override public void onActivityStarted(Activity activity) {
+        shutdown = false;
+        autoCheck.entry();
+        reconcileDisplay();
+    }
+    @Override public void onActivityStopped(Activity activity) {}
+    @Override public void onActivityDestroyed(Activity activity) {}
     @Override public void onActivityCreated(Activity activity, Bundle saved) {}
     @Override public void onActivityResumed(Activity activity) {}
     @Override public void onActivityPaused(Activity activity) {}

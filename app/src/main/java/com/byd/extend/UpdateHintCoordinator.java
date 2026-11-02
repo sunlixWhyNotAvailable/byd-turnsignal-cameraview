@@ -125,9 +125,13 @@ public final class UpdateHintCoordinator {
     }
 
     public void markVisible(long actualShownElapsedMs) {
+        markVisible(actualShownElapsedMs, 10_000L);
+    }
+
+    public void markVisible(long actualShownElapsedMs, long remainingMs) {
         runOnMain(() -> {
             if (!UpdateHintState.PENDING.equals(ownState.phase)) return;
-            ownState = ownState.visible(actualShownElapsedMs, ++revision);
+            ownState = ownState.visible(actualShownElapsedMs, remainingMs, ++revision);
             Log.i(TAG, "visible event=" + ownState.eventId + " expires="
                     + ownState.expiresAtElapsedMs);
             broadcastOwnState();

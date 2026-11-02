@@ -35,8 +35,8 @@ android {
         applicationId = "com.byd.extend"
         minSdk = 26
         targetSdk = 29
-        versionCode = 126
-        versionName = "1.9.4"
+        versionCode = 127
+        versionName = "1.9.5"
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
         buildConfigField(
             "String",

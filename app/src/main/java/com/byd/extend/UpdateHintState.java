@@ -90,8 +90,13 @@ public final class UpdateHintState {
     }
 
     public UpdateHintState visible(long shownElapsedMs, long newRevision) {
+        return visible(shownElapsedMs, 10_000L, newRevision);
+    }
+
+    public UpdateHintState visible(long shownElapsedMs, long remainingMs, long newRevision) {
+        if (remainingMs <= 0L || remainingMs > 10_000L) throw new IllegalArgumentException("Invalid hint lifetime");
         return new UpdateHintState(PROTOCOL_VERSION, ownerPackage, processSessionId, newRevision,
-                eventId, VISIBLE, requestedAtElapsedNanos, shownElapsedMs + 10_000L, displayId,
+                eventId, VISIBLE, requestedAtElapsedNanos, shownElapsedMs + remainingMs, displayId,
                 preferredSizePercent, preferredWidthPx, preferredHeightPx);
     }
 

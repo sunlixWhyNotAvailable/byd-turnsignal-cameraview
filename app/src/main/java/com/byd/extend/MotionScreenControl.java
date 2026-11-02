@@ -47,9 +47,11 @@ final class MotionScreenControl implements AutoCloseable {
     private final CellularRecovery cellular;
     private boolean cellularOwnWake;
     private boolean cellularDarkened;
+    private boolean inheritedBacklightPending = true;
+    private boolean inheritedBacklightLoaded;
     private boolean warningRaisedBacklight;
     private boolean warningBorrowedCellularDarkness;
-    private int cellularVehiclePower = -1;
+    private volatile int cellularVehiclePower = -1;
     private volatile long cellularPowerEpoch;
     private boolean coverAttempted;
     private boolean coverRemoved;
@@ -68,9 +70,7 @@ final class MotionScreenControl implements AutoCloseable {
         cellular.attachScreen(this);
         handler.post(() -> {
             try {
-                // A replacement helper releases our old gate, but never inherits permission to darken again.
-                cellularDarkened = cellular.hasOwnedBacklight();
-                restoreCellularBacklight("helper_replaced");
+                reconcileInheritedBacklight();
             } catch (Exception error) { cellularError("ownership_recovery", error); }
         });
     }
@@ -78,6 +78,7 @@ final class MotionScreenControl implements AutoCloseable {
     void cellularSettingsChanged() {
         handler.post(() -> {
             try {
+                reconcileInheritedBacklight();
                 if (!cellular.screenOffAfterRecovery()) restoreCellularBacklight("settings_changed");
                 else darkenAfterCellular();
                 if (!cellular.enabled()) cellularOwnWake = false;
@@ -91,10 +92,12 @@ final class MotionScreenControl implements AutoCloseable {
         cellularVehiclePower = normalized;
         cellularPowerEpoch++;
         handler.post(() -> {
-            if (normalized <= 0) return;
-            try { restoreCellularBacklight("vehicle_on"); }
+            try {
+                reconcileInheritedBacklight();
+                if (cellularVehiclePower > 0) restoreCellularBacklight("vehicle_on");
+            }
             catch (Exception error) { cellularError("power_on", error); }
-            cellularOwnWake = false;
+            if (cellularVehiclePower > 0) cellularOwnWake = false;
         });
     }
 
@@ -104,6 +107,7 @@ final class MotionScreenControl implements AutoCloseable {
             try {
                 if (powerEpoch != cellularPowerEpoch || !cellular.enabled()
                         || !request.equals(OemWakeDiscovery.request())) return;
+                reconcileInheritedBacklight();
                 if (needsWake && !warningActive) {
                     boolean woke = controlCall("APN2 wakeUp reason=" + reason, () -> {
                         CellularApnPlatform platform = new CellularApnPlatform(
@@ -185,6 +189,35 @@ final class MotionScreenControl implements AutoCloseable {
         });
     }
 
+    private void reconcileInheritedBacklight() throws Exception {
+        if (!inheritedBacklightPending || warningActive) return;
+        if (!inheritedBacklightLoaded) {
+            cellularDarkened = cellular.hasOwnedBacklight();
+            inheritedBacklightLoaded = true;
+        }
+        if (!cellular.configured()) return;
+        if (!cellularDarkened) {
+            inheritedBacklightPending = false;
+            return;
+        }
+        int actual = controlCall("inherited backlight read", MotionScreenControl::backlightRaw);
+        MotionScreenOwnership.Inherited action = MotionScreenOwnership.inherited(
+                cellularDarkened, cellular.screenOffAfterRecovery(), cellularVehiclePower, actual);
+        if (action == MotionScreenOwnership.Inherited.WAIT) {
+            logDarkeningDecision("wait", "inherited_power_unknown", cellularVehiclePower, actual);
+            return;
+        }
+        if (action == MotionScreenOwnership.Inherited.RESTORE) restoreCellularBacklight("ownership_reconcile");
+        else if (action == MotionScreenOwnership.Inherited.RELEASE) {
+            cellular.recordBacklightOwnership(false);
+            cellularDarkened = false;
+        }
+        cellularOwnWake = action == MotionScreenOwnership.Inherited.KEEP;
+        inheritedBacklightPending = false;
+        CellularRecovery.log("apn2_backlight_inherited action=" + action + " power="
+                + cellularVehiclePower + " backlight=" + actual);
+    }
+
     private String lastDarkeningDecision;
 
     private void logDarkeningDecision(String action, String reason, int power, int backlight) {
@@ -234,7 +267,7 @@ final class MotionScreenControl implements AutoCloseable {
         }
     }
 
-    private static int backlightRaw() throws Exception {
+    static int backlightRaw() throws Exception {
         requireShellUid();
         int value = (Integer) Class.forName(DISPLAY_IFACE).getMethod("getPowerScreenStatus", int.class)
                 .invoke(service(DISPLAY_IFACE), 0);
@@ -865,7 +898,7 @@ final class MotionScreenControl implements AutoCloseable {
         return info.getClass().getField("state").getInt(info);
     }
 
-    private static String animationStatus() throws Exception {
+    static String animationStatus() throws Exception {
         return (String) Class.forName("android.os.SystemProperties")
                 .getMethod("get", String.class).invoke(null, "sys.accanim.status");
     }

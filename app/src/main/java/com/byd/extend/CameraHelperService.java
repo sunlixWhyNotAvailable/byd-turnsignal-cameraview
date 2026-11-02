@@ -884,7 +884,13 @@ public final class CameraHelperService extends Service {
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
         weatherRuntime = new WeatherRuntime(this, settings, this::lifecycle);
         ensureHelperCreated();
-        cameraRuntime.setVehiclePowerListener(weatherRuntime::vehiclePowerChanged);
+        UpdateHintRuntime updates = UpdateHintRuntime.get(this);
+        CameraRuntimeClient updateSource = cameraRuntime;
+        updates.setDisplayReader(updateSource);
+        updateSource.setVehiclePowerListener((known, off) -> {
+            weatherRuntime.vehiclePowerChanged(known, off);
+            updates.vehiclePowerChanged(updateSource, known, off);
+        });
         controllersInitialized = true;
     }
 

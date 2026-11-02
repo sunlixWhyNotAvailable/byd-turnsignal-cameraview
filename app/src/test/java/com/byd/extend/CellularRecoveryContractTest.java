@@ -217,6 +217,14 @@ public class CellularRecoveryContractTest {
         JSONObject reopened = new JSONObject(new String(Files.readAllBytes(new File(directory,
                 CellularRecoveryDiagnostics.FILE_NAME).toPath()), StandardCharsets.UTF_8)).getJSONObject("snapshot");
         assertTrue(CellularRecovery.ownsBacklight(reopened, "boot-a"));
+        assertEquals(MotionScreenOwnership.Inherited.KEEP,
+                MotionScreenOwnership.inherited(CellularRecovery.ownsBacklight(reopened, "boot-a"), true, 0, 0));
+        assertEquals(MotionScreenOwnership.Inherited.WAIT, MotionScreenOwnership.inherited(true, true, -1, 0));
+        assertEquals(MotionScreenOwnership.Inherited.RESTORE, MotionScreenOwnership.inherited(true, true, 1, 0));
+        assertEquals(MotionScreenOwnership.Inherited.RESTORE, MotionScreenOwnership.inherited(true, false, 0, 0));
+        assertEquals(MotionScreenOwnership.Inherited.RELEASE, MotionScreenOwnership.inherited(true, true, 0, 1));
+        assertEquals(MotionScreenOwnership.Inherited.RELEASE,
+                MotionScreenOwnership.inherited(CellularRecovery.ownsBacklight(reopened, "boot-b"), true, 0, 0));
         assertFalse(CellularRecovery.ownsBacklight(reopened, "boot-b"));
         assertFalse(CellularRecovery.ownsBacklight(reopened, ""));
         owned.put("backlight_owned", false);
@@ -248,5 +256,24 @@ public class CellularRecoveryContractTest {
             assertEquals(actualError, new JSONObject(text).getJSONObject("snapshot")
                     .getJSONObject("discovery").getString("error"));
         }
+    }
+
+    @Test public void recoveredCheckRetainsOriginalErrorAndItsTimeInPersistedSnapshot() throws Exception {
+        File directory = temporary.newFolder();
+        JSONObject snapshot = new JSONObject();
+        try { Files.readAllBytes(new File(directory, "absent").toPath()); fail(); }
+        catch (java.io.IOException error) { CellularRecovery.recordCheck(snapshot, "check-1", 100, error); }
+        assertTrue(snapshot.getBoolean("check_error_active"));
+        String original = snapshot.getString("check_error");
+        CellularRecoveryDiagnostics.write(directory, snapshot);
+        Files.readAllBytes(new File(directory, CellularRecoveryDiagnostics.FILE_NAME).toPath());
+        CellularRecovery.recordCheck(snapshot, "check-2", 200, null);
+        CellularRecoveryDiagnostics.write(directory, snapshot);
+        JSONObject reopened = new JSONObject(new String(Files.readAllBytes(new File(directory,
+                CellularRecoveryDiagnostics.FILE_NAME).toPath()), StandardCharsets.UTF_8)).getJSONObject("snapshot");
+        assertFalse(reopened.getBoolean("check_error_active"));
+        assertEquals(original, reopened.getString("check_error"));
+        assertEquals(100, reopened.getLong("check_error_at_ms"));
+        assertEquals(200, reopened.getLong("check_recovered_at_ms"));
     }
 }

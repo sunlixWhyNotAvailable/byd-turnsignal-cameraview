@@ -91,7 +91,13 @@ final class CellularApnRecovery implements AutoCloseable {
                             + " elapsed_ms=" + SystemClock.elapsedRealtime());
                 try { runCheck(checkEpoch); }
                 catch (InterruptedException error) { throw error; }
-                catch (Exception error) { log("check_error", CellularRecovery.diagnosticDetail(error, "stage=check_process")); }
+                catch (Exception error) {
+                    synchronized (lock) {
+                        boolean current = !stopping && epoch == checkEpoch;
+                        log("check_error", CellularRecovery.diagnosticDetail(error,
+                                "stage=check_process epoch=" + checkEpoch + " current=" + current));
+                    }
+                }
                 synchronized (lock) {
                     if (epoch == checkEpoch) schedule.checkFinished(SystemClock.elapsedRealtime());
                 }
@@ -166,13 +172,31 @@ final class CellularApnRecovery implements AutoCloseable {
                 needsWake |= line.startsWith("APN2 wake_required ");
             }
             synchronized (lock) {
-                if (!stopping && epoch == checkEpoch) owner.checked(request, ready, needsWake, selected.reason);
+                if (!stopping && epoch == checkEpoch && request.equals(OemWakeDiscovery.request())) {
+                    owner.checkCompleted(this, request, null);
+                    owner.checked(request, ready, needsWake, selected.reason);
+                }
             }
             log("check_finished", "epoch=" + checkEpoch + " exit_code=" + result.exitCode);
         } catch (OwnedShellProcess.Failure error) {
             // Preserve observations even if ON/cancellation interrupts the short check.
             recordOutput(checkEpoch, error.output);
+            recordCheckError(checkEpoch, request, error);
             throw error;
+        } catch (Exception error) {
+            recordCheckError(checkEpoch, request, error);
+            throw error;
+        }
+    }
+
+    private void recordCheckError(long checkEpoch, String request, Exception error) {
+        synchronized (lock) {
+            try {
+                if (!stopping && epoch == checkEpoch && request.equals(OemWakeDiscovery.request()))
+                    owner.checkCompleted(this, request, error);
+            } catch (Exception secondary) {
+                error.addSuppressed(new java.io.IOException("Cannot correlate APN2 check failure with current request", secondary));
+            }
         }
     }
 

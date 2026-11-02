@@ -25,7 +25,7 @@ final class CameraRuntimeHost {
             MOTION_UNBIND_WORKER = 21, MOTION_SOURCE_FRAME = 28;
     static final int VIEW_ATTACH = 22, VIEW_DETACH = 23, VIEW_REGISTER_HELPER = 24,
             VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26,
-            VIEW_UPDATE_CABIN_MIRROR = 27;
+            VIEW_UPDATE_CABIN_MIRROR = 27, UPDATE_DISPLAY_STATE = 29;
     static final String CALLBACK = "com.byd.extend.ICameraRuntimeClient";
     static final int POWER_QUICKBOOT = 1, POWER_SCREEN_OFF = 2, POWER_SCREEN_ON = 3,
             POWER_USER_PRESENT = 4;
@@ -172,6 +172,7 @@ final class CameraRuntimeHost {
                     replayCameraPowerState();
                     helper.reportRetainedCameraState();
                     break;
+                case UPDATE_DISPLAY_STATE: return UpdateDisplayState.read(context);
                 case PANO:
                     if (platformValue < -1 || platformValue > 1 || scope == null || scope.length() > 64)
                         throw new IllegalArgumentException("invalid pano state");
@@ -204,7 +205,7 @@ final class CameraRuntimeHost {
             reply.writeStrongBinder(cameraEndpointFor(callback));
             reply.writeBundle(pending);
         }
-        if (operation == SETTINGS) reply.writeBundle(pending);
+        if (operation == SETTINGS || operation == UPDATE_DISPLAY_STATE) reply.writeBundle(pending);
         return operation;
     }
 

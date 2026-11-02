@@ -21,8 +21,8 @@ final class CellularRecovery implements AutoCloseable {
     private volatile boolean screenOffAfterRecovery = true;
     private MotionScreenControl screen;
     private OemWakeDiscovery discovery;
-    private CellularApnRecovery recovery;
-    private long generation = -1;
+    private volatile CellularApnRecovery recovery;
+    private volatile long generation = -1;
 
     CellularRecovery(Listener listener) {
         this.listener = listener;
@@ -36,6 +36,7 @@ final class CellularRecovery implements AutoCloseable {
     }
 
     boolean enabled() { return enabled; }
+    boolean configured() { return generation >= 0; }
     boolean screenOffAfterRecovery() { return enabled && screenOffAfterRecovery; }
     void attachScreen(MotionScreenControl value) { screen = value; }
     synchronized boolean hasOwnedBacklight() throws Exception {
@@ -137,6 +138,7 @@ final class CellularRecovery implements AutoCloseable {
                     String key = detail.contains("child_") || detail.contains("cleanup_error")
                             ? "cleanup_error" : "last_error";
                     active.snapshot.put(key, detail);
+                    active.snapshot.put(key + "_at_ms", System.currentTimeMillis());
                 }
                 active.snapshot.put("last_event", detail);
                 active.persistAndNotify(detail);
@@ -152,6 +154,26 @@ final class CellularRecovery implements AutoCloseable {
         String json = snapshot.toString();
         writeAtomic(diagnostics, json.getBytes(StandardCharsets.UTF_8));
         listener.changed(json, diagnostic);
+    }
+
+    synchronized void checkCompleted(CellularApnRecovery source, String request, Throwable error) {
+        if (recovery != source) return;
+        try {
+            if (error == null && !snapshot.optBoolean("check_error_active")
+                    && snapshot.has("check_healthy_since_ms")) return;
+            recordCheck(snapshot, request, System.currentTimeMillis(), error);
+            persistAndNotify("");
+        } catch (Exception secondary) { log(diagnosticDetail(secondary, "stage=check_status_persist")); }
+    }
+
+    static void recordCheck(JSONObject snapshot, String request, long now, Throwable error) throws Exception {
+        snapshot.put("check_request", request).put("check_error_active", error != null);
+        if (error != null) snapshot.put("check_error", diagnosticDetail(error, "stage=apn2_check"))
+                .put("check_error_at_ms", now);
+        else {
+            snapshot.put("check_healthy_since_ms", now);
+            if (snapshot.has("check_error")) snapshot.put("check_recovered_at_ms", now);
+        }
     }
 
     static void validateFile(Path path, long limit) throws Exception {

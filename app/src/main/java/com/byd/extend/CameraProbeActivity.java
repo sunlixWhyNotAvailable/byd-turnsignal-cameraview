@@ -772,6 +772,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private boolean updateCheckDialogRequested;
     private int updateCheckDialogResult = UPDATE_CHECK_RESULT_NONE;
     private final UpdateHintRuntime.CheckListener updateCheckListener = new UpdateHintRuntime.CheckListener() {
+        @Override public void onUpdateEligibilityChanged() { showCachedUpdateIfAvailable(); }
         @Override public void onCheckStarted(boolean force) { onUpdateCheckStarted(force); }
         @Override public void onCheckDiscarded() {
             updateCheckInFlight = false;
@@ -2283,7 +2284,7 @@ public final class CameraProbeActivity extends ComponentActivity
         } else if (updateCheckDialogResult == UPDATE_CHECK_RESULT_LATEST) {
             showUpdateStatus(runtimeText(R.string.runtime_up_to_date), false);
         } else {
-            AppUpdateManager.UpdateInfo pending = UpdateHintRuntime.get(this).pendingOffer();
+            AppUpdateManager.UpdateInfo pending = UpdateHintRuntime.get(this).manualOffer();
             if (pending == null) {
                 updateCheckDialogRequested = false;
                 UpdateHintRuntime.get(this).setManualCheckDialogRequested(false);
@@ -2527,6 +2528,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 runtimeText(R.string.update_dialog_close), true, markdown, true,
                 null, null, null, updateStatus, updateStatusIsError,
                 availableVersion, historyWarning));
+        UpdateHintRuntime.get(this).offerDecision("shown");
         return true;
     }
 
@@ -2552,21 +2554,24 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private boolean canPresentUpdateResult(boolean replacingUpdateDialog) {
-        return activityResumed && !activityDestroyed && !isFinishing() && !shutdownRequested
-                && !cameraPermissionPending && !microphonePermissionInFlight
-                && !bluetoothPermissionInFlight && pendingBluetoothProfiles.isEmpty()
-                && !microphonePermissionPending && pendingManualAdbEvent == null
-                && !backgroundStartSettingsPending()
-                && !weatherLocationPermissionPending && !weatherLocationPermissionInFlight
-                && !adbAuthPending && !adbAuthorizationStartScheduled
-                && !startupOverlayPermissionFlow.foregroundAuthorizationInFlight()
-                && startupOverlayPermissionFlow.canPresentStartupDialogs(
-                        android.provider.Settings.canDrawOverlays(this))
-                && !settingsTransferInProgress && !settingsReloadPending
-                && legacyImportOfferDialog == null && settingsTransferDialog == null
-                && !logExportInProgress && !compatibilityExportInProgress
-                && productionUi != null && (replacingUpdateDialog
-                        || productionUi.getState().getDialog() == null);
+        String reason = null;
+        if (!activityResumed || activityDestroyed || isFinishing() || shutdownRequested) reason = "activity_not_ready";
+        else if (cameraPermissionPending) reason = "camera_permission";
+        else if (microphonePermissionInFlight || microphonePermissionPending) reason = "microphone_permission";
+        else if (bluetoothPermissionInFlight || !pendingBluetoothProfiles.isEmpty()) reason = "bluetooth_permission";
+        else if (pendingManualAdbEvent != null || adbAuthPending || adbAuthorizationStartScheduled
+                || startupOverlayPermissionFlow.foregroundAuthorizationInFlight()) reason = "adb_authorization";
+        else if (backgroundStartSettingsPending()) reason = "background_start_reminder";
+        else if (weatherLocationPermissionPending || weatherLocationPermissionInFlight) reason = "location_permission";
+        else if (!startupOverlayPermissionFlow.canPresentStartupDialogs(
+                android.provider.Settings.canDrawOverlays(this))) reason = "overlay_permission";
+        else if (settingsTransferInProgress || settingsReloadPending || legacyImportOfferDialog != null
+                || settingsTransferDialog != null) reason = "settings_transfer";
+        else if (logExportInProgress || compatibilityExportInProgress) reason = "export_in_progress";
+        else if (productionUi == null || !replacingUpdateDialog
+                && productionUi.getState().getDialog() != null) reason = "another_dialog";
+        if (reason != null) UpdateHintRuntime.get(this).offerDecision(reason);
+        return reason == null;
     }
 
     private void startAndBindHelperService() {

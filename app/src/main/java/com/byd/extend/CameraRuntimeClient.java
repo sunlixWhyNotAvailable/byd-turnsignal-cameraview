@@ -239,6 +239,26 @@ final class CameraRuntimeClient {
         if (pano != null) pano.reportStatus();
     }
 
+    Bundle readUpdateDisplayState() throws Exception {
+        IBinder target;
+        synchronized (this) {
+            if (detached || shell == null) throw new IllegalStateException("Update display reader: helper not attached");
+            target = shell;
+        }
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(CameraRuntimeHost.UPDATE_DISPLAY_STATE);
+            data.writeStrongBinder(callback);
+            if (!target.transact(TurnSignalShellProtocol.TX_CAMERA_RUNTIME, data, reply, 0))
+                throw new IllegalStateException("Update display read unsupported by attached helper");
+            reply.readException();
+            Bundle result = reply.readBundle(getClass().getClassLoader());
+            if (result == null) throw new IllegalStateException("Update display response missing");
+            return result;
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
     private synchronized void platformAttached() {
         if (detached || shell == null) return;
         if (cluster == null)
@@ -358,6 +378,7 @@ final class CameraRuntimeClient {
 
     synchronized void detach() {
         detached = true;
+        UpdateHintRuntime.get(context).clearDisplayReader(this);
         vehiclePowerListener = null;
         settings.unregisterOnSharedPreferenceChangeListener(preferenceListener);
         handler.removeCallbacks(preferenceSync);

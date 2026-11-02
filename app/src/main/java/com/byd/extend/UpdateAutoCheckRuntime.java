@@ -8,9 +8,6 @@ import java.util.function.LongSupplier;
 
 /** Main-thread, process-owned update cycle. Invalid HTTP work owns its slot until done. */
 final class UpdateAutoCheckRuntime implements Runnable {
-    static final long AUTO_CHECK_DELAY_MS = 30_000L;
-    private static final long ENTRY_REFRESH_AGE_MS = 3_600_000L;
-    private static long processStartedAt = -1L;
 
     static final class Request {
         final long id;
@@ -28,25 +25,20 @@ final class UpdateAutoCheckRuntime implements Runnable {
     private final Consumer<String> event;
     private Request active;
     private long sequence;
-    private long dueAt;
-    private long lastWake;
-    private long lastSuccessfulCheckAt = -1L;
+    private long dueAt = -1L;
     private int failures;
     private boolean automatic;
-    private boolean sleeping;
+    private boolean eligible;
     private boolean stopped;
     private boolean downloading;
     private boolean manualPending;
-    private boolean displayStateKnown;
-    private boolean displayReady;
 
     UpdateAutoCheckRuntime(BiConsumer<Runnable, Long> post, Consumer<Runnable> cancel,
             BooleanSupplier enabled, Consumer<Request> check, Consumer<String> event) {
-        this(SystemClock::elapsedRealtime, startedAt(), post, cancel, enabled, check, event);
+        this(SystemClock::elapsedRealtime, post, cancel, enabled, check, event);
     }
 
-    // Tests run the production queue/admission path with a controlled clock and transport.
-    UpdateAutoCheckRuntime(LongSupplier clock, long startedAt,
+    UpdateAutoCheckRuntime(LongSupplier clock,
             BiConsumer<Runnable, Long> post, Consumer<Runnable> cancel,
             BooleanSupplier enabled, Consumer<Request> check, Consumer<String> event) {
         this.clock = clock;
@@ -56,19 +48,6 @@ final class UpdateAutoCheckRuntime implements Runnable {
         this.check = check;
         this.event = event;
         automatic = enabled.getAsBoolean();
-        lastWake = startedAt;
-        dueAt = automatic ? startedAt + AUTO_CHECK_DELAY_MS : -1L;
-        if (automatic) event.accept("scheduled reason=startup delay_ms="
-                + Math.max(0L, dueAt - clock.getAsLong()));
-    }
-
-    static synchronized void onProcessStarted() {
-        if (processStartedAt < 0L) processStartedAt = SystemClock.elapsedRealtime();
-    }
-
-    private static synchronized long startedAt() {
-        onProcessStarted();
-        return processStartedAt;
     }
 
     void refresh() {
@@ -78,7 +57,7 @@ final class UpdateAutoCheckRuntime implements Runnable {
             failures = 0;
             invalidateAutomatic("preference");
             dueAt = -1L;
-            if (next && !stopped && !sleeping) schedule(AUTO_CHECK_DELAY_MS, "enabled");
+            if (next && !stopped && eligible) schedule(0L, "enabled");
         }
         queue();
     }
@@ -109,8 +88,7 @@ final class UpdateAutoCheckRuntime implements Runnable {
             dueAt = -1L;
             if (success) {
                 failures = 0;
-                lastSuccessfulCheckAt = clock.getAsLong();
-            } else if (automatic && !sleeping) {
+            } else if (automatic && eligible) {
                 long delay = retryDelay(failures);
                 failures = Math.min(4, failures + 1);
                 schedule(delay, "failure_" + failures);
@@ -136,73 +114,22 @@ final class UpdateAutoCheckRuntime implements Runnable {
         refresh();
     }
 
-    void sleep() {
-        if (sleeping) return;
-        sleeping = true;
-        dueAt = -1L;
-        invalidateAutomatic("sleep");
-        cancel.accept(this);
-        event.accept("paused reason=sleep");
-    }
-
-    void wake(String action) {
-        wake(action, false);
-    }
-
-    void onDisplayState(boolean ready) {
-        boolean wasKnown = displayStateKnown;
-        boolean wasReady = displayReady;
-        displayStateKnown = true;
-        displayReady = ready;
-        if (!ready) {
-            sleep();
-        } else if (wasKnown && !wasReady) {
-            wake("screen_on", true);
-        }
-    }
-
-    private void wake(String action, boolean displayTransition) {
-        if (stopped || (displayStateKnown && !displayReady)) return;
-        long now = clock.getAsLong();
-        boolean quickBoot = "android.intent.action.QUICKBOOT_POWERON".equals(action);
-        if (!displayTransition && !sleeping
-                && (!quickBoot || now - lastWake < AUTO_CHECK_DELAY_MS)) return;
-        sleeping = false;
-        lastWake = now;
-        automatic = enabled.getAsBoolean();
+    void setEligible(boolean value) {
+        if (eligible == value) { refresh(); return; }
+        eligible = value;
         failures = 0;
-        invalidateAutomatic("wake");
         dueAt = -1L;
-        if (automatic && !(active != null && active.valid && active.manual) && !manualPending) {
-            schedule(AUTO_CHECK_DELAY_MS, "wake:" + action);
-        }
-        queue();
-    }
-
-    void entry(boolean interactive) {
-        entry(interactive, false);
-    }
-
-    void entry(boolean displayReady, boolean offerPending) {
-        if (stopped) {
-            stopped = false;
-            sleeping = true;
-        }
-        onDisplayState(displayReady);
-        if (displayReady) wake("user_entry");
+        if (!value) invalidateAutomatic("vehicle_or_screen_off");
+        else if (!stopped && enabled.getAsBoolean()
+                && !(active != null && active.valid) && !manualPending) schedule(0L, "vehicle_and_screen_on");
         refresh();
-        long now = clock.getAsLong();
-        if (displayReady && !offerPending && automatic && !sleeping && !stopped
-                && lastSuccessfulCheckAt >= 0L
-                && now - lastSuccessfulCheckAt >= ENTRY_REFRESH_AGE_MS
-                && active == null && !manualPending && !downloading && dueAt < 0L) {
-            schedule(AUTO_CHECK_DELAY_MS, "entry_stale");
-        }
-        queue();
     }
+
+    void entry() { stopped = false; refresh(); }
 
     void shutdown() {
         stopped = true;
+        eligible = false;
         dueAt = -1L;
         failures = 0;
         manualPending = false;
@@ -228,7 +155,7 @@ final class UpdateAutoCheckRuntime implements Runnable {
         cancel.accept(this);
         if (stopped || downloading || active != null) return;
         if (manualPending) post.accept(this, 0L);
-        else if (automatic && !sleeping && dueAt >= 0L) {
+        else if (automatic && eligible && dueAt >= 0L) {
             post.accept(this, Math.max(0L, dueAt - clock.getAsLong()));
         }
     }
@@ -237,7 +164,7 @@ final class UpdateAutoCheckRuntime implements Runnable {
         refresh();
         if (stopped || downloading || active != null) return;
         if (manualPending) start(true);
-        else if (automatic && !sleeping && dueAt >= 0L && clock.getAsLong() >= dueAt) start(false);
+        else if (automatic && eligible && dueAt >= 0L && clock.getAsLong() >= dueAt) start(false);
     }
 
     private void start(boolean manual) {
