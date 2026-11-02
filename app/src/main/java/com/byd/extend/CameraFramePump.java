@@ -75,7 +75,8 @@ final class CameraFramePump {
     private final IntPredicate preparedForOutputPredicate = this::preparedForOutput;
     private final Acquisition acquisition = new Acquisition();
     private int signals;
-    private boolean queued, matrixReported;
+    private boolean queued;
+    private final MatrixLog matrixLog = new MatrixLog();
     private volatile boolean failed;
     private boolean trackingCaptureFence, captureFenceNotReady;
     private long firstCallbackNs, lastFrameTimestamp;
@@ -496,14 +497,17 @@ final class CameraFramePump {
         } catch (Throwable error) {
             diagnosticFailure = appendFailure(diagnosticFailure, "report camera source format", error);
         }
-        if (collectMetrics && DiagnosticLogPolicy.extended()
-                && metricsRevision == DiagnosticLogPolicy.revision()
-                && reportMatrix && !matrixReported && surface != null) {
+        if (collectMetrics && reportMatrix && surface != null
+                && matrixLog.shouldReport(matrix, metricsRevision)) {
             try {
-                Log.i("BydCameraProbe", "{\"kind\":\"camera_texture_matrix\","
-                        + "\"source\":\"direct_camera_source_hub\",\"stage\":\"avm_source\","
+                com.byd.extend.remote.CameraViewingDiagnostics.detail(
+                        "camera_texture_matrix", "camera", "{\"kind\":\"camera_texture_matrix\","
+                        + "\"source\":\"camera_frame_pump\",\"stage\":\"source_input\","
                         + "\"source_index\":" + index + ",\"pid\":" + Process.myPid()
-                        + ",\"tid\":" + Process.myTid() + ",\"surface_identity\":"
+                        + ",\"uid\":" + Process.myUid() + ",\"tid\":" + Process.myTid()
+                        + ",\"policy_revision\":" + metricsRevision
+                        + ",\"producer_timestamp_ns\":" + sample.producerTimestampNs
+                        + ",\"surface_identity\":"
                         + System.identityHashCode(surface) + ",\"preview_index\":" + index
                         + ",\"surface_texture_id\":" + System.identityHashCode(input)
                         + ",\"source_width\":" + sourceWidth
@@ -511,7 +515,6 @@ final class CameraFramePump {
                         + (int) (size >>> 32) + ",\"output_height\":" + (int) size
                         + ",\"matrix\":" + Arrays.toString(matrix)
                         + ",\"worker\":\"" + thread.getName() + "\"}");
-                matrixReported = true;
             } catch (Throwable error) {
                 diagnosticFailure = appendFailure(diagnosticFailure,
                         "report camera texture matrix", error);
@@ -532,6 +535,22 @@ final class CameraFramePump {
                     "report camera acquisition metrics", error);
         }
         if (diagnosticFailure != null) reportFailure(diagnosticFailure);
+    }
+
+    /** Acquisition-thread state; keep the first matrix after each logging enable as a new baseline. */
+    static final class MatrixLog {
+        private float[] previous;
+        private long revision = -1;
+
+        boolean shouldReport(float[] current, long frameRevision) {
+            if (!DiagnosticLogPolicy.extended() || frameRevision != DiagnosticLogPolicy.revision())
+                return false;
+            if (revision == frameRevision && Arrays.equals(previous, current)) return false;
+            if (previous == null) previous = current.clone();
+            else System.arraycopy(current, 0, previous, 0, current.length);
+            revision = frameRevision;
+            return true;
+        }
     }
 
     private boolean preparedForOutput(int slot) {
