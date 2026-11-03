@@ -1,0 +1,76 @@
+package com.byd.extend
+
+import kotlin.math.*
+
+data class DistanceReading(val cm: Double, val color: Int)
+data class DistanceContourPoint(val x: Float, val y: Float, val color: Int)
+data class DistanceContour(val points: List<DistanceContourPoint>, val closed: Boolean)
+
+/** Clockwise: front, front-right, right, rear-right, rear, rear-left, left, front-left. */
+object DistanceWidgetContour {
+    fun build(readings: List<DistanceReading?>, maximumCm: Int): List<DistanceContour> {
+        require(readings.size == 8 && maximumCm > 0)
+        require(readings.filterNotNull().all { it.cm >= 0 && it.cm <= maximumCm })
+        if (readings.all { it == null }) return emptyList()
+        val closed = readings.all { it != null }
+        val groups = mutableListOf<List<Int>>()
+        if (closed) groups += readings.indices.toList()
+        else {
+            val start = (readings.indexOfFirst { it == null } + 1) % 8
+            var run = mutableListOf<Int>()
+            repeat(8) { offset ->
+                val index = (start + offset) % 8
+                if (readings[index] != null) run += index
+                else if (run.isNotEmpty()) { groups += run; run = mutableListOf() }
+            }
+            if (run.isNotEmpty()) groups += run
+        }
+        return groups.map { group ->
+            val first = if (closed) 0f else -0.5f
+            val points = (0..group.size * 24).map { step ->
+                val position = first + step / 24f
+                val low = floor(position).toInt()
+                val a = readings[group[if (closed) low % group.size else low.coerceIn(group.indices)]]!!
+                val b = readings[group[if (closed) (low + 1) % group.size else (low + 1).coerceIn(group.indices)]]!!
+                val t = (position - floor(position)).let { it * it * (3f - 2f * it) }
+                point(group.first() + position, (a.cm + (b.cm - a.cm) * t).toFloat(), maximumCm,
+                    blend(a.color, b.color, t))
+            }.toMutableList()
+            if (closed) points[points.lastIndex] = points.first()
+            DistanceContour(points, closed)
+        }
+    }
+
+    fun point(sector: Float, distanceCm: Float, maximumCm: Int, color: Int): DistanceContourPoint {
+        require(maximumCm > 0 && distanceCm.isFinite() && distanceCm in 0f..maximumCm.toFloat())
+        val angle = sector * PI / 4
+        val dx = sin(angle).toFloat()
+        val dy = -cos(angle).toFloat()
+        // Expand the same rounded car outline by a distance-dependent gap, including its corners.
+        val gap = 12f + 96f * distanceCm / maximumCm
+        val width = 68f + gap
+        val height = 123f + gap
+        val radius = 42f + gap
+        val x = abs(dx)
+        val y = abs(dy)
+        val reach = when {
+            x > 0.00001f && width / x * y <= height - radius -> width / x
+            y > 0.00001f && height / y * x <= width - radius -> height / y
+            else -> {
+                val dot = x * (width - radius) + y * (height - radius)
+                dot + sqrt((dot * dot - (width - radius).pow(2) - (height - radius).pow(2) + radius.pow(2)).coerceAtLeast(0f))
+            }
+        }
+        return DistanceContourPoint(300f + dx * reach, 300f + dy * reach, color)
+    }
+
+    private fun blend(a: Int, b: Int, t: Float): Int {
+        var result = 0
+        for (shift in listOf(0, 8, 16, 24)) {
+            val from = (a ushr shift) and 255
+            val to = (b ushr shift) and 255
+            result = result or ((from + (to - from) * t).roundToInt() shl shift)
+        }
+        return result
+    }
+}

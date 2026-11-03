@@ -28,6 +28,7 @@ final class CameraRuntimeClient {
     private IBinder camera;
     private volatile boolean visible;
     private volatile boolean preview;
+    private volatile boolean distancePreview;
     private volatile boolean detached;
     // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
     private ClusterFullscreenController cluster;
@@ -82,6 +83,9 @@ final class CameraRuntimeClient {
             if (code == CameraRuntimeHost.EVENT) {
                 String line = data.readString();
                 handler.post(() -> { if (!detached) events.accept(line); });
+            } else if (code == CameraRuntimeHost.DISTANCE_FRAME) {
+                Bundle frame = data.readBundle(getClass().getClassLoader());
+                mainHandler.post(() -> { if (!detached && frame != null) DistanceWidgetUiFeed.accept(frame); });
             } else if (code == CameraRuntimeHost.PREFERENCES) {
                 data.readBundle(getClass().getClassLoader());
                 handler.post(() -> settingsChanged("sync"));
@@ -167,6 +171,7 @@ final class CameraRuntimeClient {
                 applyRuntimeSettings(pending, snapshot);
                 command(CameraRuntimeHost.VISIBILITY, visible, "", null);
                 if (preview) command(CameraRuntimeHost.PREVIEW, true, "", null);
+                if (distancePreview) command(CameraRuntimeHost.DISTANCE_PREVIEW, true, "", null);
                 handler.post(this::platformAttached);
                 MotionDetectorClient.notifyCameraHostReady(context);
                 // A new host needs the viewing capability registered again, without a polling loop.
@@ -238,6 +243,15 @@ final class CameraRuntimeClient {
     synchronized void preview(boolean value) {
         preview = value;
         if (connect()) command(CameraRuntimeHost.PREVIEW, value, "", null);
+    }
+
+    synchronized void distancePreview(boolean visible) {
+        distancePreview = visible;
+        if (connect()) command(CameraRuntimeHost.DISTANCE_PREVIEW, visible, "", null);
+    }
+
+    synchronized void distanceToggle() {
+        if (connect()) command(CameraRuntimeHost.DISTANCE_TOGGLE, false, "", null);
     }
 
     synchronized void toggleReverse() {
@@ -426,7 +440,7 @@ final class CameraRuntimeClient {
                     || operation == CameraRuntimeHost.NATIVE_DIRECTION_ACK)
                 data.writeBundle(bundle);
             if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.VISIBILITY
-                    || operation == CameraRuntimeHost.PREVIEW) data.writeInt(flag ? 1 : 0);
+                    || operation == CameraRuntimeHost.PREVIEW || operation == CameraRuntimeHost.DISTANCE_PREVIEW) data.writeInt(flag ? 1 : 0);
             if (operation == CameraRuntimeHost.PANO || operation == CameraRuntimeHost.POWER)
                 data.writeInt(platformValue);
             if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.PANO)
@@ -444,6 +458,7 @@ final class CameraRuntimeClient {
     }
 
     private void failure(String kind, Exception error) {
+        mainHandler.post(DistanceWidgetUiFeed::disconnected);
         try { deliverEvent(new org.json.JSONObject().put("kind", kind)
                 .put("error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error)).toString()); }
         catch (org.json.JSONException ignored) { /* fixed String fields */ }

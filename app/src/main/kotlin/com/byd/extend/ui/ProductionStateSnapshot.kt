@@ -25,7 +25,7 @@ fun readProductionUiState(
     header = HeaderUiState(weatherEnabled = preferences.getBoolean(WeatherRuntime.PREF_ENABLED, false)),
     signals = readSignals(preferences),
     blind = readBlind(preferences, displayGeometry),
-    parking = readParking(preferences, displayGeometry),
+    parking = ParkingUiState(),
     reverse = readReverse(preferences, displayGeometry),
     mirror = readMirror(preferences, displayGeometry),
     settings = SettingsUiState(

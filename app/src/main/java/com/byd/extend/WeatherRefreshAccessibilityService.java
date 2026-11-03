@@ -356,6 +356,7 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
         if (result.actions.contains(CameraButtonBindings.Action.ReverseSource)) {
             CameraHelperService.requestReverseSteeringToggle(this);
         }
+        if (result.actions.contains(CameraButtonBindings.Action.DistanceVisibility)) CameraHelperService.distanceToggle(this);
         boolean source = result.actions.contains(CameraButtonBindings.Action.MirrorSource);
         boolean visibility = result.actions.contains(
                 CameraButtonBindings.Action.MirrorVisibility);
@@ -389,7 +390,9 @@ public final class WeatherRefreshAccessibilityService extends AccessibilityServi
 
     private List<CameraButtonGesturePolicy.Assignment> currentAssignments(
             SharedPreferences preferences) {
-        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(6);
+        List<CameraButtonGesturePolicy.Assignment> result = new ArrayList<>(7);
+        if (preferences.getBoolean(DistanceWidgetStore.ENABLED, false))
+            addAssignment(result, preferences, CameraButtonBindings.Action.DistanceVisibility, 1L);
         addAssignment(result, preferences, CameraButtonBindings.Action.ReverseSource,
                 CameraProbeActivity.reverseOwnerEpochSnapshot());
         boolean mirrorEnabled = RearviewMirrorSettings.enabled(preferences);

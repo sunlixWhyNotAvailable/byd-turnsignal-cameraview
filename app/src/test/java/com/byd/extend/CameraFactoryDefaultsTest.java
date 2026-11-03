@@ -249,7 +249,7 @@ public final class CameraFactoryDefaultsTest {
         assertEquals(CameraDewarpConfig.PROJECTION_CYLINDRICAL,
                 first.getInt("camera_dewarp_v3_reverse_front_1_projection"));
         assertFalse(first.getBoolean("camera_dewarp_v3_reverse_front_1_enabled"));
-        assertEquals(7, new JSONObject(CameraSettingsTransfer.exportCameraPreset(
+        assertEquals(8, new JSONObject(CameraSettingsTransfer.exportCameraPreset(
                 imported, geometry(1024, 768, 1280, 480))).getInt("version"));
     }
 

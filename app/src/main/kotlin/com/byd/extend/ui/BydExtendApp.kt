@@ -213,7 +213,7 @@ fun BydExtendApp(
                             state.signals, state.avas, state.adbRecovery, strings, colors, dispatchAction,
                             sidebarScroll, cameraHost, motionArchiveState, uiSession)
                         RootTab.Blind -> BlindScreen(state.blind, strings, colors, dispatchAction, cameraHost, onPreview)
-                        RootTab.Parking -> ParkingScreen(state.parking, strings, colors, dispatchAction, cameraHost, onPreview)
+                        RootTab.Parking -> com.byd.extend.ui.distance.DistanceWidgetScreen(colors, strings, dispatchAction)
                         RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, dispatchAction, cameraHost, onPreview)
                         RootTab.Mirror -> MirrorScreen(state.mirror, strings, colors, dispatchAction, cameraHost, onPreview)
                         RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
@@ -291,7 +291,7 @@ private fun rememberSessionScrollRestore(
 internal fun BydExtendUiState.scrollKey(): String = when (activeTab) {
     RootTab.Signals -> "signals:${signals.category}"
     RootTab.Blind -> "blind:${blind.selectedGroup}:${blind.selectedSide}:${blind.section}"
-    RootTab.Parking -> "parking:${parking.selectedView}:${parking.section}"
+    RootTab.Parking -> "distance-widget"
     RootTab.Reverse -> "reverse:${reverse.selectedElement}:${reverse.selectedSource}:${reverse.section}"
     RootTab.Mirror -> "mirror:${mirror.target}:${mirror.activeFront}:${mirror.section}"
     RootTab.Settings -> "settings:${settings.category}"

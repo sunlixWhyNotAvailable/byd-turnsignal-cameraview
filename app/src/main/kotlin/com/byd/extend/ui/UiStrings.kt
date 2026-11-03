@@ -125,7 +125,7 @@ internal class UiStrings @JvmOverloads constructor(
     val tabs get() = listOf(
         text("Інтеграції BYD", "BYD integrations", "BYD 集成"),
         text("Камери сліпих зон", "Blind-zone cameras", "盲区摄像头"),
-        text("Камери паркування", "Parking cameras", "泊车摄像头"),
+        resource(R.string.distance_widget_title),
         text("Камери заднього ходу", "Reverse cameras", "倒车摄像头"),
         text("Дзеркало заднього виду", "Rearview mirror", "后视镜"),
         text("Налаштування", "Settings", "设置"),

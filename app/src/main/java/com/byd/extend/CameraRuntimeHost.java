@@ -25,11 +25,11 @@ final class CameraRuntimeHost {
             MOTION_UNBIND_WORKER = 21, MOTION_SOURCE_FRAME = 28;
     static final int VIEW_ATTACH = 22, VIEW_DETACH = 23, VIEW_REGISTER_HELPER = 24,
             VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26,
-            VIEW_UPDATE_CABIN_MIRROR = 27, UPDATE_DISPLAY_STATE = 29, NATIVE_DIRECTION_ACK = 30;
+            VIEW_UPDATE_CABIN_MIRROR = 27, UPDATE_DISPLAY_STATE = 29, NATIVE_DIRECTION_ACK = 30, DISTANCE_PREVIEW = 31, DISTANCE_TOGGLE = 32;
     static final String CALLBACK = "com.byd.extend.ICameraRuntimeClient";
     static final int POWER_QUICKBOOT = 1, POWER_SCREEN_OFF = 2, POWER_SCREEN_ON = 3,
             POWER_USER_PRESENT = 4;
-    static final int EVENT = 1, PREFERENCES = 2, AVM_CONFIG = 3;
+    static final int EVENT = 1, PREFERENCES = 2, AVM_CONFIG = 3, DISTANCE_FRAME = 4;
     private final HandlerThread thread = new HandlerThread("camera-runtime");
     private final Handler handler;
     private final java.util.concurrent.atomic.AtomicLong callSequence = new java.util.concurrent.atomic.AtomicLong();
@@ -44,7 +44,8 @@ final class CameraRuntimeHost {
     private final java.util.function.BiConsumer<Integer, Integer> platformSignal;
     private final CameraHelperMain.HelperBinder helper;
     private BlindSpotOverlayController blind;
-    private ParkingCameraController parking;
+    private DistanceWidgetController distance;
+    private final Context distanceIdentity;
     private ReverseCameraController reverse;
     private RearviewMirrorController mirror;
     private final CameraRuntimeLifetime<IBinder> lifetime = new CameraRuntimeLifetime<>();
@@ -99,6 +100,7 @@ final class CameraRuntimeHost {
     CameraRuntimeHost(Context system, int appUid, Consumer<String> journal,
             java.util.function.BiConsumer<Integer, Integer> platformSignal) throws Exception {
         this.appUid = appUid;
+        distanceIdentity = TurnSignalShellMain.shellContext(system);
         this.journal = journal;
         this.platformSignal = platformSignal;
         viewingHelperApkIdentity = CameraViewingShellProtocol.currentApkIdentity(system);
@@ -127,7 +129,7 @@ final class CameraRuntimeHost {
                 ? data.readBundle(getClass().getClassLoader()) : null;
         IBinder callback = operation == ATTACH ? data.readStrongBinder() : null;
         boolean flag = operation == ATTACH || operation == SETTINGS
-                || operation == VISIBILITY || operation == PREVIEW ? data.readInt() != 0 : false;
+                || operation == VISIBILITY || operation == PREVIEW || operation == DISTANCE_PREVIEW ? data.readInt() != 0 : false;
         boolean initialVisible = operation == ATTACH && data.readInt() != 0;
         boolean initialPreview = operation == ATTACH && data.readInt() != 0;
         int platformValue = operation == PANO || operation == POWER ? data.readInt() : 0;
@@ -167,6 +169,7 @@ final class CameraRuntimeHost {
                     Bundle unsaved = context.settings.updateFromClient(settings);
                     CameraMeshPreparation.warmSettings(context);
                     if (!"sync".equals(scope)) applySettings(scope);
+                    if (settings.keySet().stream().anyMatch(key -> key.startsWith("distance_widget_"))) distance.settingsChanged();
                     return unsaved;
                 case ACK_SETTINGS: context.settings.acknowledge(settings); break;
                 case NATIVE_DIRECTION_ACK:
@@ -201,6 +204,8 @@ final class CameraRuntimeHost {
                     preview = flag;
                     applyVehiclePower();
                     break;
+                case DISTANCE_PREVIEW: distance.preview(flag); break;
+                case DISTANCE_TOGGLE: distance.toggle(); break;
                 case TOGGLE_REVERSE:
                     if (!visible) reverse.requestSteeringToggle(0);
                     break;
@@ -956,15 +961,17 @@ final class CameraRuntimeHost {
         BlindSpotOverlayController.migrateOverlayPreferences(context.settings);
         CameraMeshPreparation.warmSettings(context);
         blind = new BlindSpotOverlayController(context, handler, this::event);
-        parking = new ParkingCameraController(context, handler, this::event);
+        distance = new DistanceWidgetController(context, distanceIdentity, handler, this::event,
+                frame -> send(DISTANCE_FRAME, null, frame));
+        distance.settingsChanged();
         reverse = new ReverseCameraController(context, handler, helper::emitControllerEvent,
-                active -> { blind.setReversePriority(active); parking.setReversePriority(active); });
+                active -> blind.setReversePriority(active));
         mirror = new RearviewMirrorController(context, handler, this::event);
         discoverCamera();
-        blind.setUiHidden(visible); parking.setUiHidden(visible);
+        blind.setUiHidden(visible);
         mirror.appVisibility(visible);
         applyVehiclePower();
-        blind.attachHelper(helper); parking.attachHelper(helper); reverse.attachHelper(helper);
+        blind.attachHelper(helper); reverse.attachHelper(helper);
         mirror.attachHelper(helper);
     }
 
@@ -990,14 +997,15 @@ final class CameraRuntimeHost {
         context.uiVisible = next;
         if (visible == next) return;
         visible = next;
-        mirror.appVisibility(next); blind.setUiHidden(next); parking.setUiHidden(next);
-        if (!next) { preview = false; applyVehiclePower(); }
+        mirror.appVisibility(next); blind.setUiHidden(next);
+        if (!next) preview = false;
+        applyVehiclePower();
     }
 
     private void applyVehiclePower() {
         boolean allowed = vehiclePower.ordinaryAllowed();
         blind.setSuspended(preview || !allowed);
-        parking.setSuspended(preview || !allowed);
+        distance.state(vehiclePowerKnown && !vehiclePowerOff, visible);
         reverse.setRuntimeAllowed(allowed);
         mirror.setRuntimeAllowed(allowed);
     }
@@ -1030,7 +1038,7 @@ final class CameraRuntimeHost {
     private void applySettings(String scope) {
         if ("warning".equals(scope)) blind.applyWarningSettings();
         else if ("trigger".equals(scope)) blind.applyTriggerSettings();
-        else if ("parking".equals(scope)) parking.settingsChanged();
+        else if ("parking".equals(scope)) distance.settingsChanged();
         else if ("reverse".equals(scope)) reverse.settingsChanged();
         else if ("reverse_gear".equals(scope)) reverse.gearSwitchingChanged();
         else if ("mirror".equals(scope)) mirror.settingsChanged();
@@ -1038,7 +1046,7 @@ final class CameraRuntimeHost {
         else {
             helper.configureLogging();
             blind.applySettings(); blind.applyWarningSettings(); blind.applyTriggerSettings();
-            parking.settingsChanged(); reverse.settingsChanged(); mirror.settingsChanged();
+            distance.settingsChanged(); reverse.settingsChanged(); mirror.settingsChanged();
         }
     }
 
@@ -1273,10 +1281,10 @@ final class CameraRuntimeHost {
 
     private void dispatch(String line, JSONObject event) {
         if (event == null) {
-            blind.acceptEvent(line); parking.acceptEvent(line); reverse.acceptEvent(line);
+            blind.acceptEvent(line); reverse.acceptEvent(line);
             mirror.acceptEvent(line);
         } else {
-            blind.acceptEvent(event); parking.acceptEvent(event); reverse.acceptEvent(event);
+            blind.acceptEvent(event); reverse.acceptEvent(event);
             mirror.acceptEvent(event);
         }
     }
@@ -1439,7 +1447,7 @@ final class CameraRuntimeHost {
             if (reverse != null) reverse.shutdown();
             if (mirror != null) mirror.shutdown();
             if (blind != null) blind.shutdown();
-            if (parking != null) parking.shutdown();
+            if (distance != null) distance.shutdown();
             helper.shutdown(true);
             thread.quitSafely();
         });

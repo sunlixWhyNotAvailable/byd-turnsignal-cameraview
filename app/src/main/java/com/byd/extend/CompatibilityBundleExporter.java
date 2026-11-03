@@ -619,7 +619,8 @@ final class CompatibilityBundleExporter {
 
     static String sanitizedPreferences(SharedPreferences preferences) {
         if (preferences == null) return "{}";
-        Map<String, ?> all = preferences.getAll();
+        Map<String, Object> all = new java.util.LinkedHashMap<>(preferences.getAll());
+        all.putAll(DistanceWidgetStore.exportValues(preferences));
         List<String> keys = new ArrayList<>(all.keySet());
         if (!keys.contains(MotionConfig.CELLULAR_PREF)) keys.add(MotionConfig.CELLULAR_PREF);
         if (!keys.contains(MotionConfig.CELLULAR_SCREEN_OFF_PREF)) keys.add(MotionConfig.CELLULAR_SCREEN_OFF_PREF);
@@ -685,6 +686,7 @@ final class CompatibilityBundleExporter {
                 || key.contains("token") || key.contains("fingerprint")
                 || key.contains("personal")) return false;
         return key.equals(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY)
+                || DistanceWidgetStore.transferKeys().contains(key)
                 || key.equals(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY)
                 || key.equals(RemoteCameraView.PREFERENCE_KEY)
                 || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)

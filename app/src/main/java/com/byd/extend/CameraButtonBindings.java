@@ -29,7 +29,7 @@ public final class CameraButtonBindings {
     public static final String HAZARD_THANKS_SOURCE = "hazard_thanks_steering_source";
 
     public enum Action {
-        ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone, AvasEngine, HazardThanks
+        ReverseSource, MirrorSource, MirrorVisibility, AvasMicrophone, AvasEngine, HazardThanks, DistanceVisibility
     }
 
     public enum Press { Single, Hold, Double }
@@ -197,6 +197,10 @@ public final class CameraButtonBindings {
                 .remove(steeringPressKey(Action.AvasMicrophone))
                 .remove(steeringPressKey(Action.AvasEngine))
                 .remove(steeringPressKey(Action.HazardThanks))
+                .putInt(keyCodeKey(Action.DistanceVisibility), UNASSIGNED)
+                .putString(pressKey(Action.DistanceVisibility), Press.Single.name())
+                .putString(sourceKey(Action.DistanceVisibility), Source.AndroidKey.name())
+                .remove(steeringPressKey(Action.DistanceVisibility))
                 .apply();
     }
 
@@ -259,6 +263,7 @@ public final class CameraButtonBindings {
     }
 
     private static String keyCodeKey(Action action) {
+        if (action == Action.DistanceVisibility) return "distance_widget_key_code";
         if (action == Action.AvasEngine) return ENGINE_KEY_CODE;
         if (action == Action.AvasMicrophone) return MICROPHONE_KEY_CODE;
         if (action == Action.HazardThanks) return HAZARD_THANKS_KEY_CODE;
@@ -267,6 +272,7 @@ public final class CameraButtonBindings {
     }
 
     private static String pressKey(Action action) {
+        if (action == Action.DistanceVisibility) return "distance_widget_press";
         if (action == Action.AvasEngine) return ENGINE_PRESS;
         if (action == Action.AvasMicrophone) return MICROPHONE_PRESS;
         if (action == Action.HazardThanks) return HAZARD_THANKS_PRESS;
@@ -275,6 +281,7 @@ public final class CameraButtonBindings {
     }
 
     private static String sourceKey(Action action) {
+        if (action == Action.DistanceVisibility) return "distance_widget_source";
         if (action == Action.AvasEngine) return ENGINE_SOURCE;
         if (action == Action.AvasMicrophone) return MICROPHONE_SOURCE;
         if (action == Action.HazardThanks) return HAZARD_THANKS_SOURCE;

@@ -34,9 +34,7 @@ final class RequiredPermissions {
         boolean camera = previewRequested || mirror || reverse
                 || preferences.getBoolean(BlindSpotOverlayController.PREF_ENABLED, false)
                 || preferences.getBoolean(BlindSpotOverlayController.PREF_FRONT_ENABLED, false);
-        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
-            camera |= ParkingCameraSettings.readRule(preferences, profile).enabled;
-        }
+        boolean distance = preferences.getBoolean(DistanceWidgetStore.ENABLED, false);
         boolean hint = preferences.getBoolean(UpdateHintRuntime.PREF_ENABLED, true);
         boolean adbRecovery = preferences.getBoolean("adb_recovery_enabled", false);
         boolean adbReminder = adbRecovery && preferences.getBoolean("adb_reminder_enabled", true);
@@ -46,7 +44,7 @@ final class RequiredPermissions {
             calls |= destination.enabled && !destination.number.isEmpty();
         }
         // These three accesses are provisioned and read back independently of runtime switches.
-        return new RequiredPermissions(camera, mirror || hint || adbReminder, true, installRequested,
+        return new RequiredPermissions(camera, distance || mirror || hint || adbReminder, true, installRequested,
                 true, true, AvasMicrophoneSettings.enabled(preferences), calls);
     }
 

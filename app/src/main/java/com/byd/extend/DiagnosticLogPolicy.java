@@ -32,7 +32,7 @@ public final class DiagnosticLogPolicy {
             "camera_source_command_stats", "dewarp_mesh_applied",
             "reverse_camera_timing", "motion_checkup_frame", "motion_frame_layout",
             "motion_frame_performance", "motion_process_cpu",
-            "weather_location_detail"));
+            "weather_location_detail", "distance_frame_detail", "distance_render_detail"));
     // These detail records also drive runtime state. Keep their full IPC delivery with logging OFF.
     private static final Set<String> FUNCTIONAL_DETAIL = new HashSet<>(Arrays.asList(
             "vehicle_state", "parking_radar_state", "camera_overlay_frame", "reverse_overlay_frame",

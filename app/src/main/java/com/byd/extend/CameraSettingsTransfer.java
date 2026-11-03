@@ -26,7 +26,7 @@ import org.xml.sax.SAXException;
 public final class CameraSettingsTransfer {
     public static final int MAX_INPUT_BYTES = 1_048_576;
     private static final String SCHEMA = "byd-extend-camera-preset";
-    private static final int VERSION = 7;
+    private static final int VERSION = 8;
     private static final int REVERSE_GUIDANCE_VERSION = 6;
     private static final int BORDER_VERSION = 4;
     private static final int LEGACY_GEOMETRY_VERSION = 3;
@@ -93,8 +93,9 @@ public final class CameraSettingsTransfer {
             result.put("schema", SCHEMA).put("version", version);
             JSONObject settings = new JSONObject();
             for (Map.Entry<String, Object> entry : values.entrySet()) {
+                if (version < 8 && DistanceWidgetStore.transferKeys().contains(entry.getKey())) continue;
                 if (entry.getKey().equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)
-                        && version < VERSION) continue;
+                        && version < 7) continue;
                 if (version < REVERSE_GUIDANCE_VERSION && isReverseGuidanceKey(entry.getKey())) continue;
                 if (version < 5 && (entry.getKey().endsWith("_strength_percent")
                         || entry.getKey().endsWith("_fov_precise")
@@ -301,7 +302,7 @@ public final class CameraSettingsTransfer {
                 : legacyPlacementPlan(preferences, copy, geometry, true);
         SharedPreferences.Editor editor = preferences.edit();
         for (String key : preferences.getAll().keySet()) {
-            if (isLegacyAllowedKey(key)) editor.remove(key);
+            if (isLegacyAllowedKey(key) && (!DistanceWidgetStore.transferKeys().contains(key) || copy.containsKey(key))) editor.remove(key);
         }
         editor.putBoolean(HazardThanksSettings.ENABLED, HazardThanksSettings.DEFAULT_ENABLED)
                 .putInt(HazardThanksSettings.FLASH_COUNT, HazardThanksSettings.DEFAULT_FLASH_COUNT)
@@ -526,7 +527,7 @@ public final class CameraSettingsTransfer {
 
     private static Map<String, Object> effectiveCameraSettings(
             SharedPreferences p, GeometryResolver geometry) {
-        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>(DistanceWidgetStore.exportValues(p));
         out.put(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY,
                 p.getBoolean(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY, false));
         out.put(BlindSpotOverlayController.PREF_ENABLED, bool(p, BlindSpotOverlayController.PREF_ENABLED, false));
@@ -1069,6 +1070,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static void validateCameraValue(String key, Object value) {
+        if (DistanceWidgetStore.transferKeys().contains(key)) { DistanceWidgetStore.validateTransfer(key, value); return; }
         if (value == null || value == JSONObject.NULL) throw new IllegalArgumentException("null camera value");
         if (isStringKey(key)) {
             if (!(value instanceof String)
@@ -1349,7 +1351,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static Set<String> cameraPresetKeys() {
-        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        LinkedHashSet<String> keys = new LinkedHashSet<>(DistanceWidgetStore.transferKeys());
         keys.add(ReverseGearSwitching.KEY);
         keys.add(ReverseGearSwitching.LEGACY_KEY);
         keys.add(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY);
@@ -1457,9 +1459,10 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
+        if (DistanceWidgetStore.transferKeys().contains(key)) return true;
         return key != null && (key.equals(ReverseGearSwitching.KEY) || key.equals(ReverseGearSwitching.LEGACY_KEY)
                 || key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
-                || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) && version < VERSION
+                || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) && version < 7
                 || version < REVERSE_GUIDANCE_VERSION && isReverseGuidanceKey(key)
                 || isNewReverseDisplayKey(key)
                 || isBlindHoldDurationKey(key)
@@ -1597,6 +1600,7 @@ public final class CameraSettingsTransfer {
 
     private static Set<String> cameraClearKeys(boolean preserveMirror) {
         LinkedHashSet<String> keys = new LinkedHashSet<>(cameraPresetKeys());
+        keys.removeAll(DistanceWidgetStore.transferKeys());
         // Every new front-Mirror field is optional. Imported files that omit
         // one must preserve its independently saved destination value.
         keys.remove(RearviewMirrorSettings.PREF_FRONT_INTEGRATED);
@@ -1654,6 +1658,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isIntegerKey(String key) {
+        if (key.equals("distance_widget_key_code")) return true;
         return key.endsWith("_strength_percent") || (!key.endsWith("_frame_aspect") && key.endsWith("_aspect"))
                 || key.endsWith("_rotation") || key.endsWith("_rotation_mode")
                 || key.endsWith("_rotation_degrees") || key.endsWith("_display_mode") || key.endsWith("_fov")
@@ -1778,6 +1783,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static void validateLegacyType(String key, Object value) {
+        if (DistanceWidgetStore.transferKeys().contains(key)) { DistanceWidgetStore.validateTransfer(key, value); return; }
         if (legacyBooleanKey(key)) {
             if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key);
         } else if (legacyIntegerKey(key)) {
@@ -1821,6 +1827,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isLegacyAllowedKey(String key) {
+        if (DistanceWidgetStore.transferKeys().contains(key)) return true;
         if (key == null || key.isEmpty()) return false;
         if (key.equals(MotionConfig.CELLULAR_GENERATION_PREF)) return false;
         // Removed from the app, but retained in settings files upgraded from older versions.
@@ -2015,6 +2022,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isStringKey(String key) {
+        if (DistanceWidgetStore.transferKeys().contains(key)) return !key.equals(DistanceWidgetStore.ENABLED) && !key.equals("distance_widget_key_code");
         return RearviewMirrorSettings.PREF_TARGET.equals(key);
     }
 

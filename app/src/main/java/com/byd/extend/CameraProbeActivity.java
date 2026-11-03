@@ -5121,10 +5121,7 @@ public final class CameraProbeActivity extends ComponentActivity
                     productionUi.getState().getBlind().getSelectedGroup(),
                     productionUi.getState().getBlind().getSelectedSide());
         }
-        if (selectedTab == TAB_PARKING_CAMERAS) {
-            return new CameraProfileId.Parking(
-                    productionUi.getState().getParking().getSelectedView());
-        }
+        if (selectedTab == TAB_PARKING_CAMERAS) return null;
         if (selectedTab == TAB_REVERSE_CAMERAS) {
             ReverseElement element = productionUi.getState().getReverse().getSelectedElement();
             if (element == ReverseElement.Background || element == ReverseElement.Widget) return null;
@@ -9285,10 +9282,7 @@ public final class CameraProbeActivity extends ComponentActivity
             return productionUi.getState().getBlind().getSection()
                     == CameraSection.Calibration;
         }
-        if (selectedTab == TAB_PARKING_CAMERAS) {
-            return productionUi.getState().getParking().getSection()
-                    == CameraSection.Calibration;
-        }
+        if (selectedTab == TAB_PARKING_CAMERAS) return false;
         return selectedTab == TAB_REVERSE_CAMERAS
                 && productionUi.getState().getReverse().getSection()
                         == CameraSection.Calibration;
@@ -9707,6 +9701,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void maybeOpenProductionPreview() {
+        if (selectedTab == TAB_PARKING_CAMERAS) return;
         if (!canAutoOpenSelectedPreview()
                 || (selectedTab != TAB_CAMERAS && selectedTab != TAB_PARKING_CAMERAS
                         && selectedTab != TAB_REARVIEW_MIRROR)
@@ -12588,7 +12583,6 @@ public final class CameraProbeActivity extends ComponentActivity
     private static boolean isAutoPreviewTab(int tab) {
         return tab == TAB_CAMERAS
                 || tab == TAB_CAMERA_CALIBRATION
-                || tab == TAB_PARKING_CAMERAS
                 || tab == TAB_REARVIEW_MIRROR
                 || tab == TAB_REVERSE_CAMERAS;
     }

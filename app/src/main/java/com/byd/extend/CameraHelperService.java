@@ -84,6 +84,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.REVERSE_GEAR_SWITCHING_CHANGED";
     private static final String ACTION_MIRROR_SETTINGS_CHANGED =
             "com.byd.extend.action.MIRROR_SETTINGS_CHANGED";
+    private static final String ACTION_DISTANCE_PREVIEW = "com.byd.extend.action.DISTANCE_PREVIEW";
+    private static final String ACTION_DISTANCE_TOGGLE = "com.byd.extend.action.DISTANCE_TOGGLE";
     private static final String ACTION_MIRROR_BUTTON =
             "com.byd.extend.action.MIRROR_BUTTON";
     private static final String ACTION_MUSIC_SETTINGS_CHANGED =
@@ -577,6 +579,15 @@ public final class CameraHelperService extends Service {
     static void cameraPreviewStopped(Context context) {
         context.startService(new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_CAMERA_PREVIEW_STOPPED));
+    }
+
+    public static void distancePreview(Context context, boolean enabled) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_DISTANCE_PREVIEW).putExtra(EXTRA_ENABLED, enabled));
+    }
+
+    static void distanceToggle(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class).setAction(ACTION_DISTANCE_TOGGLE));
     }
 
     static void cameraSettingsChanged(Context context) {
@@ -1155,6 +1166,8 @@ public final class CameraHelperService extends Service {
             cameraRuntime.preview(false);
         }
         ensureHelperStarted();
+        if (ACTION_DISTANCE_PREVIEW.equals(action)) cameraRuntime.distancePreview(command.enabled);
+        if (ACTION_DISTANCE_TOGGLE.equals(action)) cameraRuntime.distanceToggle();
         if (ACTION_CALLS_CONFIGURE.equals(action)) {
             helper.configureCalls(CallsRuntime.requiresRescueSubscription(this));
         }
@@ -2110,6 +2123,16 @@ public final class CameraHelperService extends Service {
             WeatherRefreshAccessibilityService.microphoneEvent(line);
         postRuntime(() -> {
             if (cameraRuntime != null) cameraRuntime.acceptPlatformEvent(line);
+            if (line.contains("\"distance_button\"")) {
+                try {
+                    org.json.JSONObject event = new org.json.JSONObject(line);
+                    int message = event.optBoolean("hidden") ? R.string.distance_button_hidden
+                            : event.optBoolean("waiting") ? R.string.distance_button_waiting : R.string.distance_button_restored;
+                    mainHandler.post(() -> Toast.makeText(this, runtimeText(this, message), Toast.LENGTH_SHORT).show());
+                } catch (org.json.JSONException error) {
+                    lifecycle("distance_toast_error", "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
+                }
+            }
             if (cameraRuntime != null && line.contains("\"helper_ping\"")) {
                 try {
                     org.json.JSONObject event = new org.json.JSONObject(line);
@@ -2126,9 +2149,7 @@ public final class CameraHelperService extends Service {
     }
 
     static boolean anyParkingEnabled(SharedPreferences preferences) {
-        for (ParkingCameraSettings.Rule rule : ParkingCameraSettings.readRules(preferences)) {
-            if (rule != null && rule.enabled) return true;
-        }
+        // Legacy parking presets must never restart the retired camera workflow.
         return false;
     }
 
