@@ -3078,6 +3078,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 "First frame ready", StatusTone.Ok, false);
         if (reversePreviewBackgroundFailureRequestId == requestId) {
             publishReversePreviewBackgroundUnavailable();
+        } else if (activeReversePreviewSourceIndexes.length == 0) {
+            clearReversePanoramaStatus();
         }
         record("camera_status", "profile", "reverse", "text", "Live preview",
                 "tone", StatusTone.Ok.name(), "pending", false);
@@ -9636,7 +9638,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 || requestedOpen || cameraHandoffPending || cameraTransition.pending()) {
             return;
         }
-        if (reverseCameraPreview.previewSourceIndexes().length == 0) {
+        if (reverseCameraPreview.previewSourceIndexes().length == 0
+                && !reverseCameraPreview.previewBaseRequired()) {
             clearReversePanoramaStatus();
             return;
         }
@@ -11756,9 +11759,7 @@ public final class CameraProbeActivity extends ComponentActivity
                             }
                             invalidStockSurfaceRetryUsed = false;
                         }
-                        if (activePreview == reverseCameraPreview
-                                && ("reverse_preview_with_stock_base".equals(json.optString("view"))
-                                || "reverse_preview_direct".equals(json.optString("view")))) {
+                        if (activePreview == reverseCameraPreview) {
                             if (reversePreviewBackgroundFailureRequestId == requestId) {
                                 publishReversePreviewBackgroundUnavailable();
                             } else {

@@ -16,6 +16,7 @@ data class DistanceWidgetProfile(
     val borderColor: Int = 0xFFF2C34E.toInt(),
     val x: Float = 50f,
     val y: Float = 50f,
+    val backgroundPercent: Int = 100,
 ) {
     fun frame(displayWidth: Float, displayHeight: Float): DistanceWidgetFrame {
         val width = minOf(500f * sizePercent / 100f, displayWidth, displayHeight * 500f / 620f)
@@ -24,8 +25,16 @@ data class DistanceWidgetProfile(
             (displayHeight - height) * y / 100f, width, height)
     }
 
+    fun backgroundFrame(displayWidth: Float, displayHeight: Float): DistanceWidgetFrame {
+        val frame = frame(displayWidth, displayHeight)
+        val scale = backgroundPercent / 100f
+        return DistanceWidgetFrame(frame.x + frame.width * (1 - scale) / 2,
+            frame.y + frame.height * (1 - scale) / 2, frame.width * scale, frame.height * scale)
+    }
+
     fun encode() = JSONObject().put("sizePercent", sizePercent).put("transparency", transparency)
         .put("borderDp", borderDp).put("borderColor", borderColor).put("x", x).put("y", y)
+        .put("backgroundPercent", backgroundPercent)
 
     companion object {
         fun decode(data: JSONObject) = DistanceWidgetProfile(
@@ -34,7 +43,8 @@ data class DistanceWidgetProfile(
             data.optInt("borderDp", 2).coerceIn(0, 16),
             data.optInt("borderColor", 0xFFF2C34E.toInt()),
             data.optDouble("x", 50.0).takeIf { it.isFinite() }?.toFloat()?.coerceIn(0f, 100f) ?: 50f,
-            data.optDouble("y", 50.0).takeIf { it.isFinite() }?.toFloat()?.coerceIn(0f, 100f) ?: 50f)
+            data.optDouble("y", 50.0).takeIf { it.isFinite() }?.toFloat()?.coerceIn(0f, 100f) ?: 50f,
+            data.optInt("backgroundPercent", 100).coerceIn(70, 100))
     }
 }
 

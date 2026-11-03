@@ -1,6 +1,7 @@
 package com.byd.extend;
 
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 
 /** Reconstructed SL07 full-contour contract (2026-08-30), units centimetres. */
@@ -10,6 +11,7 @@ public final class AdasDistanceModel {
     // Clockwise: front, front-right, right, rear-right, rear, rear-left, left, front-left.
     private static final double[][][] PATCHES = createPatches();
     private static final double EPSILON = 1e-7;
+    private static final double[][] EMPTY = new double[0][];
 
     public static final class Obstacle {
         public final double x, y, length, width, heading;
@@ -33,16 +35,57 @@ public final class AdasDistanceModel {
         for (Obstacle object : objects) {
             double[][] box = object.corners();
             double[] distance = new double[DIRECTIONS];
-            double nearest = Double.POSITIVE_INFINITY;
             for (int i = 0; i < DIRECTIONS; i++) {
                 distance[i] = Double.POSITIVE_INFINITY;
-                for (double[] segment : PATCHES[i]) distance[i] = Math.min(distance[i], clearance(box, segment));
-                nearest = Math.min(nearest, distance[i]);
+                for (double[] segment : PATCHES[i]) {
+                    double[][] covered;
+                    if (segment[0] == segment[2]) {
+                        boolean front = segment[0] > CENTER_X;
+                        covered = clip(box, 0, segment[0], front);
+                        covered = clip(covered, 1, Math.min(segment[1], segment[3]), true);
+                        covered = clip(covered, 1, Math.max(segment[1], segment[3]), false);
+                    } else {
+                        boolean left = segment[1] > CENTER_Y;
+                        covered = clip(box, 1, segment[1], left);
+                        covered = clip(covered, 0, Math.min(segment[0], segment[2]), true);
+                        covered = clip(covered, 0, Math.max(segment[0], segment[2]), false);
+                    }
+                    distance[i] = Math.min(distance[i], clearance(covered, segment));
+                }
+                // Corner sectors also cover the quadrant outside both sides of the car.
+                if ((i & 1) != 0) {
+                    boolean front = i == 1 || i == 7, left = i == 5 || i == 7;
+                    double x = CENTER_X + (front ? LENGTH / 2 : -LENGTH / 2);
+                    double y = CENTER_Y + (left ? WIDTH / 2 : -WIDTH / 2);
+                    double[][] covered = clip(clip(box, 0, x, front), 1, y, left);
+                    distance[i] = Math.min(distance[i], clearance(covered, new double[]{x,y,x,y}));
+                }
             }
-            for (int i = 0; i < DIRECTIONS; i++) if (distance[i] <= nearest + EPSILON)
+            for (int i = 0; i < DIRECTIONS; i++) if (Double.isFinite(distance[i]))
                 result[i] = Double.isNaN(result[i]) ? distance[i] : Math.min(result[i], distance[i]);
         }
         return result;
+    }
+
+    private static double[][] clip(double[][] polygon, int axis, double edge, boolean greater) {
+        int inside = 0;
+        for (double[] p : polygon) if (greater ? p[axis] >= edge : p[axis] <= edge) inside++;
+        if (inside == 0) return EMPTY;
+        if (inside == polygon.length) return polygon;
+        List<double[]> result = new ArrayList<>();
+        for (int i = 0; i < polygon.length; i++) {
+            double[] a = polygon[i], b = polygon[(i + 1) % polygon.length];
+            boolean inA = greater ? a[axis] >= edge : a[axis] <= edge;
+            boolean inB = greater ? b[axis] >= edge : b[axis] <= edge;
+            if (inA) result.add(a);
+            if (inA != inB) {
+                double t = (edge - a[axis]) / (b[axis] - a[axis]);
+                double[] p = {a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])};
+                p[axis] = edge;
+                result.add(p);
+            }
+        }
+        return result.toArray(new double[0][]);
     }
 
     private static double[][][] createPatches() {
@@ -59,8 +102,8 @@ public final class AdasDistanceModel {
         double[] a={segment[0],segment[1]}, b={segment[2],segment[3]};
         if (inside(box,a) || inside(box,b)) return 0;
         double minimum=Double.POSITIVE_INFINITY;
-        for (int i=0;i<4;i++) {
-            double[] c=box[i], d=box[(i+1)%4];
+        for (int i=0;i<box.length;i++) {
+            double[] c=box[i], d=box[(i+1)%box.length];
             if (intersects(a,b,c,d)) return 0;
             minimum=Math.min(minimum, Math.min(Math.min(pointSegment(a,c,d),pointSegment(b,c,d)),
                     Math.min(pointSegment(c,a,b),pointSegment(d,a,b))));
@@ -71,7 +114,13 @@ public final class AdasDistanceModel {
         return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
     }
     private static boolean inside(double[][] box,double[] p) {
-        for(int i=0;i<4;i++) if(cross(box[i],box[(i+1)%4],p)<-EPSILON) return false;
+        double area = 0;
+        for(int i=0;i<box.length;i++) {
+            double[] a = box[i], b = box[(i+1)%box.length];
+            if(cross(a,b,p)<-EPSILON) return false;
+            area += a[0]*b[1]-b[0]*a[1];
+        }
+        if (Math.abs(area) < EPSILON) return false;
         return true;
     }
     private static boolean intersects(double[] a,double[] b,double[] c,double[] d) {

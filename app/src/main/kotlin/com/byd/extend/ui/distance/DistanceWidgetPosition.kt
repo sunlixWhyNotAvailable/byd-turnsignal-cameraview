@@ -46,7 +46,7 @@ internal fun DistanceDisplayPreview(settings: DistanceWidgetSettings, radius: Fl
                     var travel = Offset.Zero
                     detectDragGestures(onDragStart = { point ->
                         origin = current; travel = Offset.Zero
-                        val b=origin.frame(display.first.toFloat(),display.second.toFloat())
+                        val b=origin.backgroundFrame(display.first.toFloat(),display.second.toFloat())
                         val p=point/(scale*density)
                         dragging=onMove!=null && p.x in b.x..b.x+b.width && p.y in b.y..b.y+b.height
                     }, onDragEnd = {dragging=false}, onDragCancel = {dragging=false}) { change, amount ->

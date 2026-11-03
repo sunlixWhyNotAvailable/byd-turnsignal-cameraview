@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
 class DistanceWidgetController internal constructor(
     private val context: CameraRuntimeContext,
     identity: Context,
-    handler: Handler,
+    private val handler: Handler,
     private val event: BiConsumer<String, Array<Any>>,
     private val previewSink: Consumer<Bundle>,
 ) {
@@ -23,6 +23,17 @@ class DistanceWidgetController internal constructor(
     private var appVisible = false
     private var preview = false
     private var overlayFailure = false
+    private var stopped = false
+    private var displayManager: android.hardware.display.DisplayManager? = null
+    private var displayCached = false
+    private var cachedTarget: DistanceTarget? = null
+    private var cachedDisplay: android.view.Display? = null
+    private val cachedMetrics = android.util.DisplayMetrics()
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(id: Int) = displayChanged()
+        override fun onDisplayRemoved(id: Int) = displayChanged()
+        override fun onDisplayChanged(id: Int) = displayChanged()
+    }
     private data class Host(val displayId: Int, val overlay: WindowlessOverlayHost,
         val view: DistanceWidgetView, val width: Int, val height: Int, var visible: Boolean = false)
     private val hosts = mutableMapOf<Triple<Int, Int, Int>, Host>()
@@ -32,30 +43,43 @@ class DistanceWidgetController internal constructor(
         render()
     }, event)
 
-    fun settingsChanged() {
+    private fun dispatch(action: () -> Unit) {
+        if (android.os.Looper.myLooper() == handler.looper) { if (!stopped) action() }
+        else handler.post { if (!stopped) action() }
+    }
+    private fun displayChanged() {
+        displayCached = false; overlayFailure = false
+        if (!stopped) render()
+    }
+
+    fun settingsChanged() = dispatch {
         try { settings = DistanceWidgetStore.read(context.settings); overlayFailure = false }
         catch (error: Exception) {
             failure("settings", error)
             settings = DistanceWidgetSettings()
             preview = false
             reconcile()
-            return
+            return@dispatch
         }
         event.accept("distance_settings", arrayOf("enabled", settings.enabled, "target", settings.target.name,
             "format", settings.format.name, "zones", settings.zones.size))
         reconcile()
     }
-    fun state(on: Boolean, visible: Boolean) {
-        powerOn = on; appVisible = visible
+    fun power(on: Boolean) {
+        if (on) dispatch { powerOn = true; reconcile() }
+        else source.control { if (!stopped) { powerOn = false; reconcile() } }
+    }
+    fun visibility(visible: Boolean) = dispatch {
+        appVisible = visible
         if (!visible) preview = false
         reconcile()
     }
-    fun preview(value: Boolean) {
+    fun preview(value: Boolean) = dispatch {
         preview = value && appVisible
         reconcile(); publishPreview()
     }
-    fun toggle() {
-        if (!settings.enabled) return
+    fun toggle() = dispatch {
+        if (!settings.enabled) return@dispatch
         context.settings.edit().putBoolean(DistanceWidgetStore.HIDDEN, !settings.hiddenByButton).apply()
         settings = DistanceWidgetStore.read(context.settings)
         render()
@@ -76,9 +100,17 @@ class DistanceWidgetController internal constructor(
         val show = !appVisible && !overlayFailure && frame.fresh(SystemClock.elapsedRealtime()) &&
             settings.visible(powerOn, true, frame.distances().map { it.takeIf(Double::isFinite) })
         try {
-            val display = if (show) CameraDisplayTarget.resolve(context, settings.target.ordinal) else null
-            val metrics = android.util.DisplayMetrics()
-            display?.getRealMetrics(metrics)
+            if (show && (!displayCached || cachedTarget != settings.target)) {
+                if (displayManager == null) {
+                    displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+                    displayManager!!.registerDisplayListener(displayListener, handler)
+                }
+                cachedDisplay = CameraDisplayTarget.resolve(context, settings.target.ordinal)
+                cachedDisplay?.getRealMetrics(cachedMetrics)
+                cachedTarget = settings.target; displayCached = true
+            }
+            val display = if (show) cachedDisplay else null
+            val metrics = cachedMetrics
             val hostKey = display?.let { Triple(it.displayId, metrics.widthPixels, metrics.heightPixels) }
             hosts.forEach { (key, host) -> if (host.visible && (!show || key != hostKey)) {
                 host.overlay.setStrictVisible(false, 0f); host.visible = false
@@ -117,7 +149,12 @@ class DistanceWidgetController internal constructor(
         event.accept("distance_widget_error", arrayOf("operation", operation, "error", error.toString(), "stack", error.stackTraceToString()))
     }
     fun shutdown() {
-        source.setNeeded(false)
-        hosts.values.forEach { try { it.overlay.quiesce(); it.visible = false } catch(error: Exception) { failure("cleanup",error) } }
+        source.control {
+            if (stopped) return@control
+            stopped = true
+            source.setNeeded(false)
+            displayManager?.unregisterDisplayListener(displayListener)
+            hosts.values.forEach { try { it.overlay.quiesce(); it.visible = false } catch(error: Exception) { failure("cleanup",error) } }
+        }
     }
 }

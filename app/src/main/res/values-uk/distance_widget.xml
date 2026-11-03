@@ -28,6 +28,7 @@
 <string name="distance_car_color_purple">"Фіолетовий"</string>
 <string name="distance_car_color_red">"Червоний"</string>
 <string name="distance_widget_size">"Розмір віджета"</string>
+<string name="distance_widget_background_size">"Розмір тла"</string>
 <string name="distance_output_display">"Екран показу"</string>
 <string name="distance_display_format">"Формат показу"</string>
 <string name="distance_format_always">"Завжди"</string>

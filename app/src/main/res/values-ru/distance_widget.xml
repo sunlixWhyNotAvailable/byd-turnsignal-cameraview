@@ -28,6 +28,7 @@
 <string name="distance_car_color_purple">"Фиолетовый"</string>
 <string name="distance_car_color_red">"Красный"</string>
 <string name="distance_widget_size">"Размер виджета"</string>
+<string name="distance_widget_background_size">"Размер фона"</string>
 <string name="distance_output_display">"Экран показа"</string>
 <string name="distance_display_format">"Формат показа"</string>
 <string name="distance_format_always">"Всегда"</string>

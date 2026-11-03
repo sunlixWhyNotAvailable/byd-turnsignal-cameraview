@@ -956,6 +956,13 @@ final class CameraHelperMain {
             reverseStockRetiredRequestId = 0;
             reverseStockRetiredProducerEpoch = 0;
             reverseStockAvmShellEpoch = 0L;
+            if (directSurfaces.length == 0) {
+                // The existing stock-only owner attaches input 0 to the shared producer.
+                String opened = openStockAvm(panoOutput, StockAvmPreview.horizontalViewpoint(3),
+                        true, false, requestId);
+                return isCameraErrorResult(opened) || isCameraBusyResult(opened)
+                        ? opened : result("reverse_preview_shell_open_queued", null);
+            }
             // The direct panes own the persistent producer.  The stock background is an
             // optional second consumer and must not gate these panes on its config callback.
             String directResult;
@@ -998,9 +1005,12 @@ final class CameraHelperMain {
         private static String validateReversePreviewTargets(
                 Surface panoOutput, Surface[] directSurfaces, int[] directIndexes) {
             if (directSurfaces == null || directIndexes == null
-                    || directSurfaces.length < 1 || directSurfaces.length > 4
+                    || directSurfaces.length > 4
                     || directSurfaces.length != directIndexes.length) {
-                return "one to four direct reverse Surface/index pairs required";
+                return "zero to four direct reverse Surface/index pairs required";
+            }
+            if (directSurfaces.length == 0 && panoOutput == null) {
+                return "reverse preview requires a Pano base or direct Surface";
             }
             if (panoOutput != null && !panoOutput.isValid()) {
                 return "Pano base Surface is invalid";
@@ -5516,9 +5526,9 @@ final class CameraHelperMain {
                     panoOutput = CameraGpuOutput.readSurface(data, callerUid);
                 }
                 int count = data.readInt();
-                if (count < 1 || count > 4) {
+                if (count < 0 || count > 4 || count == 0 && hasPanorama == 0) {
                     throw new IllegalArgumentException(
-                            "one to four direct reverse Surface/index pairs required");
+                            "Pano base or one to four direct reverse Surface/index pairs required");
                 }
                 directSurfaces = new Surface[count];
                 directIndexes = new int[count];

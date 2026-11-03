@@ -32,6 +32,8 @@ final class CameraRuntimeHost {
     static final int EVENT = 1, PREFERENCES = 2, AVM_CONFIG = 3, DISTANCE_FRAME = 4;
     private final HandlerThread thread = new HandlerThread("camera-runtime");
     private final Handler handler;
+    private final HandlerThread distanceThread = new HandlerThread("distance-runtime");
+    private final Handler distanceHandler;
     private final java.util.concurrent.atomic.AtomicLong callSequence = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicInteger queuedCalls = new java.util.concurrent.atomic.AtomicInteger();
     private volatile CameraRuntimeTask<?> runningCall;
@@ -44,7 +46,7 @@ final class CameraRuntimeHost {
     private final java.util.function.BiConsumer<Integer, Integer> platformSignal;
     private final CameraHelperMain.HelperBinder helper;
     private BlindSpotOverlayController blind;
-    private DistanceWidgetController distance;
+    private final DistanceWidgetController distance;
     private final Context distanceIdentity;
     private ReverseCameraController reverse;
     private RearviewMirrorController mirror;
@@ -75,7 +77,7 @@ final class CameraRuntimeHost {
     private final MotionWakeRecovery motionWakeRecovery = new MotionWakeRecovery();
     private JSONObject motionPower, motionLock, motionDisplay;
     private final CameraSourceDemand.PowerGate vehiclePower = new CameraSourceDemand.PowerGate();
-    private String vehiclePowerStateLine;
+    private volatile String vehiclePowerStateLine;
     private long vehiclePowerSourceEpoch = -1L;
     private long vehiclePowerRevision = -1L;
     private boolean vehiclePowerKnown;
@@ -109,6 +111,10 @@ final class CameraRuntimeHost {
         CameraShellMain.initializeSystemFontsForShell();
         thread.start();
         handler = new Handler(thread.getLooper());
+        distanceThread.start();
+        distanceHandler = new Handler(distanceThread.getLooper());
+        distance = new DistanceWidgetController(context, distanceIdentity, distanceHandler, this::event,
+                frame -> sendToClient(DISTANCE_FRAME, null, frame));
         helper = new CameraHelperMain.HelperBinder(context, handler, this::acceptCameraLine);
         context.settings.setChangeListener(delta -> handler.post(() -> send(PREFERENCES, null, Bundle.EMPTY)));
     }
@@ -134,6 +140,44 @@ final class CameraRuntimeHost {
         boolean initialPreview = operation == ATTACH && data.readInt() != 0;
         int platformValue = operation == PANO || operation == POWER ? data.readInt() : 0;
         String scope = operation == SETTINGS || operation == PANO ? data.readString() : "";
+        // Admit Distance controls before the camera queue, under the same app/attachment checks.
+        if (operation != ATTACH) {
+            if (lifetime.stopped() && operation != STOP) throw new IllegalStateException("camera runtime stopped");
+            if (owner == null || lifetime.client() != owner)
+                throw new IllegalStateException("camera client attachment expired");
+            if (operation == SETTINGS && settings != null) {
+                context.overlayAllowed = flag;
+                Bundle delta = new Bundle(settings);
+                for (String key : new java.util.HashSet<>(delta.keySet())) {
+                    if (key.startsWith("distance_widget_")) settings.remove(key);
+                    else delta.remove(key);
+                }
+                if (!delta.isEmpty()) {
+                    context.settings.updateFromClient(delta);
+                    distance.settingsChanged();
+                }
+                if (settings.isEmpty() && ("parking".equals(scope) || "sync".equals(scope))) {
+                    reply.writeNoException();
+                    reply.writeBundle(context.settings.updateFromClient(Bundle.EMPTY));
+                    return operation;
+                }
+            }
+            if (operation == VISIBILITY || operation == DETACH) {
+                distanceHandler.post(() -> {
+                    if (lifetime.client() == owner) distance.visibility(operation == VISIBILITY && flag);
+                });
+            }
+            if (operation == DISTANCE_PREVIEW || operation == DISTANCE_TOGGLE) {
+                distanceHandler.post(() -> {
+                    if (!lifetime.stopped() && lifetime.client() == owner) {
+                        if (operation == DISTANCE_PREVIEW) distance.preview(flag); else distance.toggle();
+                    }
+                });
+                reply.writeNoException();
+                return operation;
+            }
+            if (operation == STOP) distance.shutdown();
+        }
         Bundle pending = call("app_" + operation, () -> {
             if (lifetime.stopped() && operation != STOP) throw new IllegalStateException("camera runtime stopped");
             if (operation != ATTACH && (owner == null || lifetime.client() != owner))
@@ -153,6 +197,8 @@ final class CameraRuntimeHost {
                     boolean retained;
                     try { retained = lifetime.attach(callback, this::initialize); }
                     catch (RuntimeException error) { stopOnHandler(); throw error; }
+                    distance.visibility(initialVisible);
+                    distance.settingsChanged();
                     if (retained && initialAppSnapshot) {
                         BlindSpotOverlayController.migrateOverlayPreferences(context.settings);
                         CameraMeshPreparation.warmSettings(context);
@@ -169,7 +215,6 @@ final class CameraRuntimeHost {
                     Bundle unsaved = context.settings.updateFromClient(settings);
                     CameraMeshPreparation.warmSettings(context);
                     if (!"sync".equals(scope)) applySettings(scope);
-                    if (settings.keySet().stream().anyMatch(key -> key.startsWith("distance_widget_"))) distance.settingsChanged();
                     return unsaved;
                 case ACK_SETTINGS: context.settings.acknowledge(settings); break;
                 case NATIVE_DIRECTION_ACK:
@@ -204,8 +249,6 @@ final class CameraRuntimeHost {
                     preview = flag;
                     applyVehiclePower();
                     break;
-                case DISTANCE_PREVIEW: distance.preview(flag); break;
-                case DISTANCE_TOGGLE: distance.toggle(); break;
                 case TOGGLE_REVERSE:
                     if (!visible) reverse.requestSteeringToggle(0);
                     break;
@@ -961,8 +1004,6 @@ final class CameraRuntimeHost {
         BlindSpotOverlayController.migrateOverlayPreferences(context.settings);
         CameraMeshPreparation.warmSettings(context);
         blind = new BlindSpotOverlayController(context, handler, this::event);
-        distance = new DistanceWidgetController(context, distanceIdentity, handler, this::event,
-                frame -> send(DISTANCE_FRAME, null, frame));
         distance.settingsChanged();
         reverse = new ReverseCameraController(context, handler, helper::emitControllerEvent,
                 active -> blind.setReversePriority(active));
@@ -1005,13 +1046,13 @@ final class CameraRuntimeHost {
     private void applyVehiclePower() {
         boolean allowed = vehiclePower.ordinaryAllowed();
         blind.setSuspended(preview || !allowed);
-        distance.state(vehiclePowerKnown && !vehiclePowerOff, visible);
         reverse.setRuntimeAllowed(allowed);
         mirror.setRuntimeAllowed(allowed);
     }
 
     private void clientDied(IBinder expected) {
         if (!lifetime.detach(expected)) return;
+        distance.visibility(false);
         helper.detachMotionCompositionPreviews();
         unlinkClient();
         // Only app-owned preview surfaces are gone; all background consumers stay attached.
@@ -1022,7 +1063,7 @@ final class CameraRuntimeHost {
 
     private void linkClient(IBinder callback) throws android.os.RemoteException {
         if (linkedClient == callback) return;
-        IBinder.DeathRecipient death = () -> handler.post(() -> clientDied(callback));
+        IBinder.DeathRecipient death = () -> clientDisconnected(callback);
         callback.linkToDeath(death, 0);
         unlinkClient();
         linkedClient = callback;
@@ -1051,12 +1092,14 @@ final class CameraRuntimeHost {
     }
 
     void acceptTelemetry(String line) {
+        JSONObject parsed = parseEvent(line);
+        if (parsed != null && "camera_vehicle_power_state".equals(parsed.optString("kind"))) {
+            acceptCameraVehiclePowerState(parsed, line);
+            return;
+        }
         handler.post(() -> {
             if (lifetime.stopped()) return;
-            JSONObject event = parseEvent(line);
-            if (event != null && "camera_vehicle_power_state".equals(event.optString("kind"))) {
-                acceptCameraVehiclePowerState(event, line);
-            }
+            JSONObject event = parsed;
             if (event != null && "motion_vehicle_state".equals(event.optString("kind"))) {
                 if ("power".equals(event.optString("signal"))) {
                     motionPower = event;
@@ -1089,7 +1132,8 @@ final class CameraRuntimeHost {
         });
     }
 
-    private void acceptCameraVehiclePowerState(JSONObject event, String line) {
+    private synchronized void acceptCameraVehiclePowerState(JSONObject event, String line) {
+        if (lifetime.stopped()) return;
         Object sourceEpochValue = event.opt("source_epoch");
         Object revisionValue = event.opt("revision");
         Object knownValue = event.opt("known");
@@ -1130,17 +1174,21 @@ final class CameraRuntimeHost {
             event("camera_vehicle_power_state_rejected", "reason", invalid.getMessage());
             return;
         }
+        boolean distanceChanged = known != vehiclePowerKnown || off != vehiclePowerOff;
         vehiclePowerSourceEpoch = sourceEpoch;
         vehiclePowerRevision = revision;
         vehiclePowerKnown = known;
         vehiclePowerOff = off;
         vehiclePowerFailureCount = failures;
         vehiclePowerStateLine = line;
-        helper.setVehiclePowerOff(!vehiclePower.ordinaryAllowed());
-        if (lifetime.started() && wasAllowed != vehiclePower.ordinaryAllowed()) {
-            applyVehiclePower();
-        }
-        if (lifetime.started()) send(EVENT, line, null);
+        if (distanceChanged) distance.power(known && !off);
+        boolean changed = wasAllowed != vehiclePower.ordinaryAllowed();
+        handler.post(() -> {
+            if (lifetime.stopped()) return;
+            helper.setVehiclePowerOff(!vehiclePower.ordinaryAllowed());
+            if (lifetime.started() && changed) applyVehiclePower();
+            if (lifetime.started()) send(EVENT, vehiclePowerStateLine, null);
+        });
     }
 
     /** Queues the cached app-owned power snapshot before a new host's ATTACH transaction. */
@@ -1315,7 +1363,9 @@ final class CameraRuntimeHost {
                     .put("t_ms", android.os.SystemClock.elapsedRealtime());
             for (int i = 0; i + 1 < fields.length; i += 2) event.put(String.valueOf(fields[i]), fields[i + 1]);
             String line = event.toString();
-            journal.accept(line); send(EVENT, line, null);
+            journal.accept(line);
+            if (kind.startsWith("distance_")) sendToClient(EVENT, line, null);
+            else send(EVENT, line, null);
         } catch (org.json.JSONException error) { throw new IllegalArgumentException(error); }
     }
 
@@ -1324,14 +1374,25 @@ final class CameraRuntimeHost {
             handler.post(() -> send(code, line, settings));
             return;
         }
+        sendToClient(code, line, settings);
+    }
+
+    private void clientDisconnected(IBinder target) {
+        distanceHandler.post(() -> {
+            if (lifetime.client() == target) distance.visibility(false);
+        });
+        handler.post(() -> clientDied(target));
+    }
+
+    private void sendToClient(int code, String line, Bundle settings) {
         IBinder target = lifetime.client();
         if (target == null) return;
         Parcel data = Parcel.obtain();
         try {
             data.writeInterfaceToken(CALLBACK);
             if (code == EVENT) data.writeString(line); else data.writeBundle(settings);
-            if (!target.transact(code, data, null, IBinder.FLAG_ONEWAY)) clientDied(target);
-        } catch (android.os.RemoteException error) { clientDied(target); }
+            if (!target.transact(code, data, null, IBinder.FLAG_ONEWAY)) clientDisconnected(target);
+        } catch (android.os.RemoteException error) { clientDisconnected(target); }
         finally { data.recycle(); }
     }
 
@@ -1407,6 +1468,7 @@ final class CameraRuntimeHost {
     }
 
     void shutdown() {
+        distance.shutdown();
         try { call("shutdown", () -> { stopOnHandler(); return null; }); }
         catch (Exception error) { event("camera_runtime_shutdown_error", "failure",
                 com.byd.extend.remote.CameraViewingDiagnostics.describe(error)); }
@@ -1426,6 +1488,7 @@ final class CameraRuntimeHost {
     }
 
     private void stopOnHandler() {
+        distance.shutdown();
         lifetime.shutdown(() -> {
             try { clearViewer(); }
             catch (Exception error) { reportViewerCleanupFailure("runtime_shutdown", error); }
@@ -1447,7 +1510,6 @@ final class CameraRuntimeHost {
             if (reverse != null) reverse.shutdown();
             if (mirror != null) mirror.shutdown();
             if (blind != null) blind.shutdown();
-            if (distance != null) distance.shutdown();
             helper.shutdown(true);
             thread.quitSafely();
         });

@@ -78,12 +78,15 @@ class DistanceWidgetTest {
     @Test fun presetLoadResetAndHelperReattachPreserveManualVisibility() {
         prefs.edit().putBoolean(DistanceWidgetStore.ENABLED,true).putBoolean(DistanceWidgetStore.HIDDEN,true).commit()
         val chosen=DistanceWidgetStore.read(prefs).copy(carModel="sk2",carColor="red",
-            tablet=DistanceWidgetProfile(sizePercent=35,x=25f),cluster=DistanceWidgetProfile(sizePercent=60,y=75f))
+            tablet=DistanceWidgetProfile(sizePercent=35,x=25f,backgroundPercent=70),
+            cluster=DistanceWidgetProfile(sizePercent=60,y=75f,backgroundPercent=85))
         DistanceWidgetStore.save(context,chosen)
         CameraButtonBindings.save(prefs,CameraButtonBindings.Action.DistanceVisibility,
             CameraButtonBindings.Binding(305,CameraButtonBindings.Press.Double))
         DistanceWidgetStore.savePreset(prefs)
         DistanceWidgetStore.applyPreset(context,true)
+        assertEquals(100,DistanceWidgetStore.read(prefs).tablet.backgroundPercent)
+        assertEquals(100,DistanceWidgetStore.read(prefs).cluster.backgroundPercent)
         assertTrue(DistanceWidgetStore.read(prefs).hiddenByButton)
         assertTrue(prefs.contains(DistanceWidgetStore.PRESET))
         DistanceWidgetStore.applyPreset(context,false)
@@ -99,7 +102,8 @@ class DistanceWidgetTest {
     }
 
     @Test fun currentPresetExportsBothProfilesAndOldImportsKeepNewSettings() {
-        val chosen=DistanceWidgetSettings(carModel="sk24",carColor="black",cluster=DistanceWidgetProfile(x=80f))
+        val chosen=DistanceWidgetSettings(carModel="sk24",carColor="black",
+            tablet=DistanceWidgetProfile(backgroundPercent=70),cluster=DistanceWidgetProfile(x=80f,backgroundPercent=85))
         DistanceWidgetStore.save(context,chosen); DistanceWidgetStore.savePreset(prefs)
         prefs.edit().putBoolean(DistanceWidgetStore.HIDDEN,true).commit()
         val exported=CameraSettingsTransfer.exportCameraPreset(context,prefs)
@@ -136,6 +140,41 @@ class DistanceWidgetTest {
         DistanceWidgetUiFeed.accept(input(time,1))
         assertEquals(2,DistanceWidgetUiFeed.frame.generation)
         assertTrue(DistanceWidgetUiFeed.frame.valid)
+        DistanceWidgetUiFeed.disconnected()
+        DistanceWidgetUiFeed.accept(input(time,1))
+        assertFalse(DistanceWidgetUiFeed.frame.valid)
+    }
+
+    @Test fun backgroundShrinksAroundSameCenterAndLegacyProfilesKeepFullBackground() {
+        val original=DistanceWidgetSettings(tablet=DistanceWidgetProfile(x=17f,y=80f),
+            cluster=DistanceWidgetProfile(x=90f,y=5f))
+        val old=JSONObject(original.encode()).apply {
+            getJSONObject("tablet").remove("backgroundPercent")
+            getJSONObject("cluster").remove("backgroundPercent")
+        }
+        assertEquals(original,DistanceWidgetSettings.decode(old.toString()))
+        old.getJSONObject("tablet").put("backgroundPercent",2)
+        old.getJSONObject("cluster").put("backgroundPercent",120)
+        assertEquals(70,DistanceWidgetSettings.decode(old.toString()).tablet.backgroundPercent)
+        assertEquals(100,DistanceWidgetSettings.decode(old.toString()).cluster.backgroundPercent)
+        for (size in listOf(20,100)) for (percent in 70..100) {
+            val profile=original.tablet.copy(sizePercent=size,backgroundPercent=percent)
+            val full=profile.frame(1920f,1080f); val background=profile.backgroundFrame(1920f,1080f)
+            assertEquals(full.x+full.width/2,background.x+background.width/2,.001f)
+            assertEquals(full.y+full.height/2,background.y+background.height/2,.001f)
+            assertEquals(full.width*percent/100,background.width,.001f)
+            assertEquals(full.height*percent/100,background.height,.001f)
+            for (sector in 0..15) {
+                val near=DistanceWidgetContour.point(sector/2f,0f,150,7,percent)
+                assertEquals(DistanceWidgetContour.point(sector/2f,0f,150,7),near)
+                val far=DistanceWidgetContour.point(sector/2f,150f,150,7,percent)
+                val oldFar=DistanceWidgetContour.point(sector/2f,150f,150,7)
+                assertTrue(kotlin.math.hypot(far.x-300,far.y-300)<=kotlin.math.hypot(oldFar.x-300,oldFar.y-300)+.001f)
+                assertEquals(7,far.color)
+            }
+            val ring=DistanceWidgetContour.build(List(8){DistanceReading(150.0,7)},150,percent).single()
+            assertTrue(ring.closed); assertEquals(ring.points.first(),ring.points.last())
+        }
     }
 
     @Test fun detailLoggingCanBeDisabledWithoutAffectingFunctionalDistances() {

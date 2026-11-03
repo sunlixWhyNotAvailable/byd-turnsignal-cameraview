@@ -25,14 +25,25 @@ final class DistanceAdasSource {
     private final Handler handler;
     private final Consumer<DistanceFrame> frames;
     private final BiConsumer<String,Object[]> events;
+    private final LatestValueDispatcher<Packet> packets;
+    private static final class Packet {
+        final long connection, received;
+        final byte[] payload;
+        Packet(long connection, long received, byte[] payload) {
+            this.connection=connection; this.received=received; this.payload=payload;
+        }
+    }
     private final Set<Long> subscribed=new LinkedHashSet<>();
-    private Object proxy, callback;
+    private volatile Object proxy;
+    private Object callback;
     private Class<?> api, callbackClass;
     private Method getTopic, getPayload;
     private AdasObstacleDecoder decoder;
     private ClassLoader loader;
-    private boolean needed, failed, started;
-    private long epoch, generation, count, startedAt;
+    private volatile boolean needed, failed;
+    private boolean started;
+    private volatile long epoch;
+    private long generation, count, startedAt, expired;
     private DistanceFrame current=DistanceFrame.unavailable(0,0,"inactive");
     private final Runnable stale=()-> {
         if(needed && current.valid && !current.fresh(SystemClock.elapsedRealtime())) invalidate("stale");
@@ -40,6 +51,7 @@ final class DistanceAdasSource {
 
     DistanceAdasSource(Context identity,Handler handler,Consumer<DistanceFrame> frames,BiConsumer<String,Object[]> events) {
         this.identity=identity; this.handler=handler; this.frames=frames; this.events=events;
+        packets=new LatestValueDispatcher<>(handler::post, this::receive);
     }
 
     void setNeeded(boolean next) {
@@ -75,15 +87,16 @@ final class DistanceAdasSource {
                 if(method.getName().equals("onRequest")) return args==null||args.length==0?null:args[0];
                 if(method.getName().equals("onChangeServiceStatus")) {
                     boolean ready=args!=null && args.length==1 && Boolean.TRUE.equals(args[0]);
-                    handler.post(()-> { if(active(connection)) status(ready); });
+                    if(active(connection)) packets.control(()-> { if(active(connection)) status(ready); });
                 } else if(method.getName().equals("onSomeIpEvent") && args!=null && args.length==1) {
                     final long received=SystemClock.elapsedRealtime();
                     try {
                         long topic=((Number)call(getTopic,args[0])).longValue();
                         if(topic!=DATA && topic!=AVAILABLE && topic!=UNAVAILABLE) return null;
-                        byte[] payload=topic==DATA?((byte[])call(getPayload,args[0])).clone():null;
-                        handler.post(()-> { if(active(connection)) receive(topic,payload,received); });
-                    } catch(Throwable error) { handler.post(()-> { if(active(connection)) error("callback",error); }); }
+                        if (!active(connection)) return null;
+                        if(topic==DATA) packets.offer(new Packet(connection,received,((byte[])call(getPayload,args[0])).clone()));
+                        else packets.control(()-> { if(active(connection)) availability(topic); });
+                    } catch(Throwable error) { packets.control(()-> { if(active(connection)) error("callback",error); }); }
                 }
                 return null;
             });
@@ -96,6 +109,7 @@ final class DistanceAdasSource {
         } catch(Throwable error) { failed=true; error("initialize",error); close(); }
     }
     private boolean active(long connection) { return needed && !failed && proxy!=null && epoch==connection; }
+    void control(Runnable action) { packets.control(action); }
     private void status(boolean ready) {
         if(!ready) { subscribed.clear(); started=false; generationState("service_disconnected"); return; }
         try {
@@ -106,28 +120,42 @@ final class DistanceAdasSource {
     private void subscribe(long topic) throws Throwable {
         if(!subscribed.contains(topic)) { command("subscribe",topic); subscribed.add(topic); }
     }
-    private void receive(long topic,byte[] payload,long received) {
+    private void availability(long topic) {
         if(topic==UNAVAILABLE) { subscribed.remove(DATA); generationState("service_unavailable"); return; }
         if(topic==AVAILABLE) { try { subscribe(DATA); } catch(Throwable error) { error("resubscribe",error); } return; }
+    }
+    private void receive(Packet packet, long token) {
+        if(!active(packet.connection) || !packets.current(token) || !started || !subscribed.contains(DATA)) return;
+        long received=packet.received, now=SystemClock.elapsedRealtime();
+        if(now<received || now-received>=DistanceFrame.STALE_MS) { expired++; invalidate("stale_delivery"); return; }
         long start=SystemClock.elapsedRealtimeNanos();
+        String operation="decode_model";
         try {
-            List<AdasDistanceModel.Obstacle> objects=decoder.decode(payload);
+            List<AdasDistanceModel.Obstacle> objects=decoder.decode(packet.payload);
             double[] distances=AdasDistanceModel.distances(objects);
+            long decoded=SystemClock.elapsedRealtimeNanos();
+            if(!active(packet.connection) || !packets.current(token)) return;
+            DistanceFrame next=new DistanceFrame(generation,received,true,"ready",distances);
+            if(!next.fresh(SystemClock.elapsedRealtime())) { expired++; invalidate("stale_delivery"); return; }
             boolean recovering=!current.valid;
-            current=new DistanceFrame(generation,received,true,"ready",distances); count++;
-            if(!current.fresh(SystemClock.elapsedRealtime())) { invalidate("stale_delivery"); return; }
+            current=next; count++;
             if(recovering) emit("distance_source_ready","generation",generation);
+            operation="publish_frame";
             frames.accept(current);
+            long published=SystemClock.elapsedRealtimeNanos();
             handler.removeCallbacks(stale);
             handler.postDelayed(stale,Math.max(0,received+DistanceFrame.STALE_MS-SystemClock.elapsedRealtime()));
             if(DiagnosticLogPolicy.extended()) {
+                operation="frame_diagnostic";
                 org.json.JSONArray values=new org.json.JSONArray(), boxes=new org.json.JSONArray();
                 for(double value:distances) values.put(Double.isNaN(value)?org.json.JSONObject.NULL:value);
                 for(AdasDistanceModel.Obstacle o:objects) boxes.put(new org.json.JSONArray(new double[]{o.x,o.y,o.length,o.width,o.heading}));
                 emit("distance_frame_detail","generation",generation,"distances_cm",values,"objects",boxes,
-                        "decode_model_us",(SystemClock.elapsedRealtimeNanos()-start)/1000);
+                        "queue_ms",now-received,"decode_model_us",(decoded-start)/1000,
+                        "publish_us",(published-decoded)/1000,"age_ms",SystemClock.elapsedRealtime()-received,
+                        "replaced",packets.replaced(),"expired",expired);
             }
-        } catch(Throwable error) { error("decode_model",error); }
+        } catch(Throwable error) { error(operation,error); }
     }
     private void generationState(String reason) {
         ++generation;
@@ -136,7 +164,8 @@ final class DistanceAdasSource {
     private void invalidate(String reason) {
         boolean changed=current.valid || !reason.equals(current.status);
         current=DistanceFrame.unavailable(generation,SystemClock.elapsedRealtime(),reason);
-        handler.removeCallbacks(stale); frames.accept(current);
+        handler.removeCallbacks(stale);
+        if(changed) frames.accept(current);
         if(changed) emit("distance_source_unavailable","reason",reason,"generation",generation);
     }
     private void command(String method,long value) throws Throwable {
@@ -144,7 +173,7 @@ final class DistanceAdasSource {
         if(result!=0 && result!=13) throw new IllegalStateException(method+"(0x"+Long.toHexString(value)+") OEM result="+result);
     }
     void close() {
-        ++epoch; ++generation; handler.removeCallbacks(stale);
+        ++epoch; ++generation; packets.clear(); handler.removeCallbacks(stale);
         if(proxy!=null) {
             for(long topic:new LinkedHashSet<>(subscribed)) cleanup("unsubscribe",()->command("unsubscribe",topic));
             if(started) cleanup("stopClient",()->command("stopClient",SERVICE));

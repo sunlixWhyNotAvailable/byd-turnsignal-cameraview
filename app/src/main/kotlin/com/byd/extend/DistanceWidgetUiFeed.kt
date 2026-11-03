@@ -24,9 +24,10 @@ object DistanceWidgetUiFeed {
             bundle.getBoolean("valid"),bundle.getString("status", "unavailable"),distances)
         if (next.receivedAt < frame.receivedAt ||
             next.receivedAt == frame.receivedAt && next.generation < frame.generation) return
-        frame = next
+        frame = if (next.valid && !next.fresh(SystemClock.elapsedRealtime()))
+            DistanceFrame.unavailable(next.generation, next.receivedAt, "stale_delivery") else next
         handler.removeCallbacks(expire)
-        if (next.valid) handler.postDelayed(expire,
+        if (frame.valid) handler.postDelayed(expire,
             (next.receivedAt + DistanceFrame.STALE_MS - SystemClock.elapsedRealtime()).coerceAtLeast(0))
     }
     @JvmStatic fun disconnected() {

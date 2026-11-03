@@ -30,6 +30,8 @@ final class CameraRuntimeClient {
     private volatile boolean preview;
     private volatile boolean distancePreview;
     private volatile boolean detached;
+    private final LatestValueDispatcher<Bundle> distanceFrames = new LatestValueDispatcher<>(
+            mainHandler::post, (frame, token) -> { if (!detached) DistanceWidgetUiFeed.accept(frame); });
     // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
     private ClusterFullscreenController cluster;
     private final NativePanoramaController nativePanorama;
@@ -85,7 +87,7 @@ final class CameraRuntimeClient {
                 handler.post(() -> { if (!detached) events.accept(line); });
             } else if (code == CameraRuntimeHost.DISTANCE_FRAME) {
                 Bundle frame = data.readBundle(getClass().getClassLoader());
-                mainHandler.post(() -> { if (!detached && frame != null) DistanceWidgetUiFeed.accept(frame); });
+                if (!detached && frame != null) distanceFrames.offer(frame);
             } else if (code == CameraRuntimeHost.PREFERENCES) {
                 data.readBundle(getClass().getClassLoader());
                 handler.post(() -> settingsChanged("sync"));
@@ -409,6 +411,7 @@ final class CameraRuntimeClient {
 
     synchronized void detach() {
         detached = true;
+        distanceFrames.control(DistanceWidgetUiFeed::disconnected);
         nativePanorama.close();
         UpdateHintRuntime.get(context).clearDisplayReader(this);
         vehiclePowerListener = null;
@@ -458,7 +461,7 @@ final class CameraRuntimeClient {
     }
 
     private void failure(String kind, Exception error) {
-        mainHandler.post(DistanceWidgetUiFeed::disconnected);
+        distanceFrames.control(DistanceWidgetUiFeed::disconnected);
         try { deliverEvent(new org.json.JSONObject().put("kind", kind)
                 .put("error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error)).toString()); }
         catch (org.json.JSONException ignored) { /* fixed String fields */ }

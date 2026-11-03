@@ -28,6 +28,7 @@
 <string name="distance_car_color_purple">"Purple"</string>
 <string name="distance_car_color_red">"Red"</string>
 <string name="distance_widget_size">"Widget size"</string>
+<string name="distance_widget_background_size">"Background size"</string>
 <string name="distance_output_display">"Display"</string>
 <string name="distance_display_format">"Display format"</string>
 <string name="distance_format_always">"Always"</string>

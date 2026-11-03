@@ -8,7 +8,8 @@ data class DistanceContour(val points: List<DistanceContourPoint>, val closed: B
 
 /** Clockwise: front, front-right, right, rear-right, rear, rear-left, left, front-left. */
 object DistanceWidgetContour {
-    fun build(readings: List<DistanceReading?>, maximumCm: Int): List<DistanceContour> {
+    fun build(readings: List<DistanceReading?>, maximumCm: Int, backgroundPercent: Int = 100): List<DistanceContour> {
+        require(backgroundPercent in 70..100)
         require(readings.size == 8 && maximumCm > 0)
         require(readings.filterNotNull().all { it.cm >= 0 && it.cm <= maximumCm })
         if (readings.all { it == null }) return emptyList()
@@ -34,20 +35,21 @@ object DistanceWidgetContour {
                 val b = readings[group[if (closed) (low + 1) % group.size else (low + 1).coerceIn(group.indices)]]!!
                 val t = (position - floor(position)).let { it * it * (3f - 2f * it) }
                 point(group.first() + position, (a.cm + (b.cm - a.cm) * t).toFloat(), maximumCm,
-                    blend(a.color, b.color, t))
+                    blend(a.color, b.color, t), backgroundPercent)
             }.toMutableList()
             if (closed) points[points.lastIndex] = points.first()
             DistanceContour(points, closed)
         }
     }
 
-    fun point(sector: Float, distanceCm: Float, maximumCm: Int, color: Int): DistanceContourPoint {
+    fun point(sector: Float, distanceCm: Float, maximumCm: Int, color: Int, backgroundPercent: Int = 100): DistanceContourPoint {
+        require(backgroundPercent in 70..100)
         require(maximumCm > 0 && distanceCm.isFinite() && distanceCm in 0f..maximumCm.toFloat())
         val angle = sector * PI / 4
         val dx = sin(angle).toFloat()
         val dy = -cos(angle).toFloat()
         // Expand the same rounded car outline by a distance-dependent gap, including its corners.
-        val gap = 12f + 96f * distanceCm / maximumCm
+        val gap = 12f + (96f - 250f * (1 - backgroundPercent / 100f)) * distanceCm / maximumCm
         val width = 68f + gap
         val height = 123f + gap
         val radius = 42f + gap

@@ -27,6 +27,7 @@
 <string name="distance_car_color_purple">"紫色"</string>
 <string name="distance_car_color_red">"红色"</string>
 <string name="distance_widget_size">"小组件大小"</string>
+<string name="distance_widget_background_size">"背景大小"</string>
 <string name="distance_output_display">"显示屏"</string>
 <string name="distance_display_format">"显示方式"</string>
 <string name="distance_format_always">"始终"</string>

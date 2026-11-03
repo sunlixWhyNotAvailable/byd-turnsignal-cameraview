@@ -296,12 +296,11 @@ final class ReverseCameraCompositionView extends FrameLayout {
     }
 
     boolean previewBaseRequired() {
-        return previewBase != null && displayTarget == CameraDisplayTarget.TABLET
-                && outputSourceIndexes().length > 0;
+        return previewBase != null && displayTarget == CameraDisplayTarget.TABLET;
     }
 
     static boolean shouldAttachPreviewBase(int displayTarget, int directSourceCount) {
-        return displayTarget == CameraDisplayTarget.TABLET && directSourceCount > 0;
+        return displayTarget == CameraDisplayTarget.TABLET;
     }
 
     void enablePreviewBase() {
@@ -991,7 +990,6 @@ final class ReverseCameraCompositionView extends FrameLayout {
 
     boolean previewSurfacesReady() {
         if (!surfacesReady()) return false;
-        if (outputSourceIndexes().length == 0) return true;
         return displayTarget != CameraDisplayTarget.TABLET
                 || previewBaseSurface != null && previewBaseSurface.isValid()
                 && previewBaseGeometryMatches();
@@ -1093,10 +1091,10 @@ final class ReverseCameraCompositionView extends FrameLayout {
         resetCentralFrontFreshness();
         resetPaneFreshness();
         setAllCovers(View.VISIBLE);
-        // Only this display's direct outputs gate reveal. The OEM panorama is optional.
+        // With no direct output the panorama itself must produce a fresh frame.
         frameBarrier.arm(requestId,
                 includeBase ? expectedGenerations[0] : 0,
-                sourceIndexes, directGenerations, requiredCount, false);
+                sourceIndexes, directGenerations, requiredCount, sourceIndexes.length == 0);
         applyEffectiveVisibility();
     }
 

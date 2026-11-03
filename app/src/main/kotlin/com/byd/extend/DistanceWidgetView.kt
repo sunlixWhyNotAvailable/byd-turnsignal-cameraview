@@ -37,7 +37,7 @@ class DistanceWidgetView(context: Context) : View(context) {
             art = car
         }
         readings = nextReadings
-        contours = DistanceWidgetContour.build(readings, value.zones.last().endCm)
+        contours = DistanceWidgetContour.build(readings, value.zones.last().endCm, value.profile.backgroundPercent)
         alpha = 1f - value.profile.transparency / 100f
         invalidate()
     }
@@ -47,6 +47,8 @@ class DistanceWidgetView(context: Context) : View(context) {
         val started = if (timing != null) android.os.SystemClock.elapsedRealtimeNanos() else 0
         super.onDraw(canvas)
         val bounds = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        val inset = (1 - settings.profile.backgroundPercent / 100f) / 2
+        bounds.inset(width * inset, height * inset)
         clip.reset(); clip.addRoundRect(bounds, radius, radius, Path.Direction.CW)
         canvas.save(); canvas.clipPath(clip); canvas.drawColor(Color.BLACK)
         val factor = min(width / 500f, height / 620f)
@@ -68,7 +70,8 @@ class DistanceWidgetView(context: Context) : View(context) {
         } }
         paint.shader = null
         if (settings.showDistance) readings.forEachIndexed { index, reading -> reading?.let {
-            val p = DistanceWidgetContour.point(index.toFloat(), it.cm.toFloat(), settings.zones.last().endCm, it.color)
+            val p = DistanceWidgetContour.point(index.toFloat(), it.cm.toFloat(), settings.zones.last().endCm,
+                it.color, settings.profile.backgroundPercent)
             val dx = p.x-300; val dy=p.y-300; val length=hypot(dx,dy)
             text.color=it.color; text.textSize=24f
             canvas.drawText(it.cm.roundToInt().toString(),p.x+dx/length*36f,

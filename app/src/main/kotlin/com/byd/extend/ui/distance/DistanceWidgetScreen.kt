@@ -105,7 +105,8 @@ internal fun DistanceWidgetScreen(
     val textMeasurer = rememberTextMeasurer()
     val labelStyle = LocalTextStyle.current.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     val sliderLabelWidth = with(LocalDensity.current) {
-        listOf(R.string.distance_widget_size, R.string.distance_widget_transparency, R.string.mirror_border_width).maxOf {
+        listOf(R.string.distance_widget_size, R.string.distance_widget_background_size,
+            R.string.distance_widget_transparency, R.string.mirror_border_width).maxOf {
             textMeasurer.measure(strings.distanceText(it), labelStyle, softWrap = false).size.width
         }.toDp() + 4.dp
     }
@@ -163,6 +164,13 @@ internal fun DistanceWidgetScreen(
                             DistanceNumericSetting(strings.distanceText(R.string.distance_widget_size), profile.sizePercent.toString(),
                                 { update(settings.withProfile(profile.copy(sizePercent = it.toFloat().roundToInt()))) }, "%", palette,
                                 range = 20f..100f, adjustable = true, slider = true,
+                                labelWidth = sliderLabelWidth, inputWidth = 64.dp, suffixWidth = 24.dp)
+                        }
+                        row("background-size") {
+                            DistanceNumericSetting(strings.distanceText(R.string.distance_widget_background_size), profile.backgroundPercent.toString(),
+                                { update(settings.withProfile(profile.copy(backgroundPercent = it.toFloat().roundToInt()))) }, "%", palette,
+                                range = 70f..100f, adjustable = true, slider = true,
+                                validate = { it % 1f == 0f },
                                 labelWidth = sliderLabelWidth, inputWidth = 64.dp, suffixWidth = 24.dp)
                         }
                         row("transparency") {

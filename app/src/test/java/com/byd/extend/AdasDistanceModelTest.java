@@ -50,4 +50,24 @@ public final class AdasDistanceModelTest {
         values[2]=-1;
         assertThrows(IllegalArgumentException.class,()->new DistanceFrame(3,1000,true,"ready",values));
     }
+
+    @Test public void capturedWideRearObjectOccupiesRearAndBothRearCorners() {
+        double[] values = AdasDistanceModel.distances(Collections.singletonList(
+                new AdasDistanceModel.Obstacle(-393.277893,9.144036,453.480164,186.170914,-.03772996)));
+        for (int i = 0; i < 8; i++) {
+            if (i >= 3 && i <= 5) assertEquals("sector="+i,81.3,values[i],.15);
+            else assertTrue("opposite side="+i,Double.isNaN(values[i]));
+        }
+    }
+
+    @Test public void broadAndIntersectingObjectsUseOnlyTheirExteriorCoverage() {
+        double[] rear = AdasDistanceModel.distances(Collections.singletonList(
+                new AdasDistanceModel.Obstacle(B-15,Y,30,400,0)));
+        assertEquals(0,rear[3],0); assertEquals(0,rear[4],0); assertEquals(0,rear[5],0);
+        for (int i : new int[]{0,1,2,6,7}) assertTrue(Double.isNaN(rear[i]));
+        double[] inside = AdasDistanceModel.distances(Collections.singletonList(box(X,Y)));
+        for (double value : inside) assertTrue(Double.isNaN(value));
+        double[] offset = AdasDistanceModel.distances(Collections.singletonList(box(F+35,L-10)));
+        assertEquals(30,offset[7],1e-6); assertTrue(Double.isNaN(offset[0]));
+    }
 }
