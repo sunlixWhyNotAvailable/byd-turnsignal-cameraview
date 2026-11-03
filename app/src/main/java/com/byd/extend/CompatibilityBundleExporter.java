@@ -44,7 +44,7 @@ final class CompatibilityBundleExporter {
     static final long MAX_FILE_BYTES = 2L * 1024L * 1024L * 1024L;
     static final long MAX_TOTAL_BYTES = 4L * 1024L * 1024L * 1024L;
     static final long MAX_TEXT_BYTES = 16L * 1024L * 1024L;
-    static final int MANIFEST_SCHEMA_VERSION = 2;
+    static final int MANIFEST_SCHEMA_VERSION = 3;
     private static final int BUFFER_SIZE = 64 * 1024;
     private static final long PROGRESS_INTERVAL_MS = 250L;
     private static final long MAIN_PREPARE_TIMEOUT_MS = 5_000L;
@@ -121,6 +121,9 @@ final class CompatibilityBundleExporter {
                             context, command, limit, LocalAdbClient.EXPORT_READ_TIMEOUT_MS,
                             operation, (kind, fields) -> {})),
                     (command, output, limit) -> {
+                        if (command.startsWith(SentryExportEvidence.STREAM_PREFIX))
+                            return SentryExportEvidence.stream(context,
+                                    command.substring(SentryExportEvidence.STREAM_PREFIX.length()), output, limit, operation);
                         CountingOutputStream counted = new CountingOutputStream(output);
                         LocalAdbClient.Result result = LocalAdbClient.executeAuthorizedStreaming(
                             context, command, counted, limit, LocalAdbClient.EXPORT_READ_TIMEOUT_MS,
@@ -250,7 +253,7 @@ final class CompatibilityBundleExporter {
                     if (error instanceof CancellationException) {
                         throw (CancellationException) error;
                     }
-                    result = CommandResult.failure(summary(error), -1);
+                    result = CommandResult.failure(com.byd.extend.remote.CameraViewingDiagnostics.describe(error), -1);
                 }
                 checkCancelled(control);
                 byte[] value = result.output.getBytes(StandardCharsets.UTF_8);
@@ -261,16 +264,25 @@ final class CompatibilityBundleExporter {
                 }
                 textTotal += value.length;
                 text.add(new TextCapture(spec, result, value));
-                if ("huawei_package_metadata".equals(spec.type)) {
+                if ("huawei_package_metadata".equals(spec.type) || "sentry_package_metadata".equals(spec.type)) {
                     List<String> nativeDirs = CompatibilityBundleEvidence.huaweiNativeLibraryDirs(
                             new String(value, StandardCharsets.UTF_8));
+                    if (spec.type.startsWith("sentry_") && nativeDirs.isEmpty()) {
+                        text.add(new TextCapture(new TextSpec(
+                                "packages/com.byd.sentrymode/native-discovery.txt", "sentry_native_inventory",
+                                "parse nativeLibraryDir/secondaryNativeLibraryDir/legacyNativeLibraryDir from " + spec.command),
+                                CommandResult.failure("No package-scoped native directory discovered; inspect package.txt. "
+                                        + "APKs are still collected; external native-library coverage is unknown. "
+                                        + "Metadata exit=" + result.exitCode + " error=" + result.error, -1), new byte[0]));
+                    }
                     for (int i = 0; i < nativeDirs.size(); i++) {
                         String directory = nativeDirs.get(i);
                         textSpecs.add(new TextSpec(
                                 spec.entry.replace("package.txt", "native-libraries-" + i + ".txt"),
-                                "huawei_native_inventory",
+                                spec.type.startsWith("sentry_") ? "sentry_native_inventory" : "huawei_native_inventory",
                                 "find -L " + shellQuote(directory)
-                                        + " -maxdepth 3 -type f -name '*.so' -print 2>/dev/null",
+                                        + " -maxdepth 3 -type f -name '*.so' -print"
+                                        + (spec.type.startsWith("sentry_") ? "" : " 2>/dev/null"),
                                 directory));
                     }
                 }
@@ -323,7 +335,8 @@ final class CompatibilityBundleExporter {
         addPaths(remote, paths, text.get(8).result.output, "avm_config", false);
         if (evidence != null) addEvidencePaths(remote, paths, evidence);
         for (TextCapture capture : text) {
-            boolean apkPaths = "huawei_package_paths".equals(capture.spec.type);
+            boolean sentry = capture.spec.type.startsWith("sentry_");
+            boolean apkPaths = "huawei_package_paths".equals(capture.spec.type) || "sentry_package_paths".equals(capture.spec.type);
             if (!apkPaths && capture.spec.nativeRoot == null) continue;
             for (String line : new String(capture.value, StandardCharsets.UTF_8).split("\\r?\\n")) {
                 String path = line.trim();
@@ -333,7 +346,8 @@ final class CompatibilityBundleExporter {
                     if (!CompatibilityBundleEvidence.isHuaweiApk(path)) continue;
                 } else if (!CompatibilityBundleEvidence.isHuaweiNativeLibrary(
                         path, capture.spec.nativeRoot)) continue;
-                addRemote(remote, paths, path, apkPaths ? "huawei_apk" : "huawei_native_library");
+                addRemote(remote, paths, path, sentry ? (apkPaths ? "sentry_apk" : "sentry_native_library")
+                        : (apkPaths ? "huawei_apk" : "huawei_native_library"));
             }
         }
         for (String path : CompatibilityBundleEvidence.CAMERA_FIRMWARE_FILES) {
@@ -430,6 +444,21 @@ final class CompatibilityBundleExporter {
                     records.add(record);
                     continue;
                 }
+                boolean sentry = spec.type.startsWith("sentry_");
+                if (sentry) {
+                    CommandResult resolved;
+                    try { resolved = textRunner.run("readlink -f " + shellQuote(spec.path), MAX_TEXT_BYTES); }
+                    catch (Exception failure) { resolved = CommandResult.failure(
+                            com.byd.extend.remote.CameraViewingDiagnostics.describe(failure), -1); }
+                    checkCancelled(control);
+                    if (resolved == null || !resolved.ok || !SentryExportEvidence.allowedResolved(resolved.output.trim())) {
+                        record.status = "error";
+                        record.error = "resolve Sentry source: " + (resolved == null ? "no result"
+                                : "exit=" + resolved.exitCode + " error=" + resolved.error + " output=" + resolved.output);
+                        records.add(record); continue;
+                    }
+                    record.resolvedPath = resolved.output.trim();
+                }
                 File temp = new File(tempDirectory, Integer.toHexString(records.size()) + ".bin");
                 StreamResult result = null;
                 space.check(0L);
@@ -447,7 +476,8 @@ final class CompatibilityBundleExporter {
                     OutputStream monitored = new ProgressOutputStream(
                             output, control, progress, spec.path, remoteIndex + 1,
                             remote.size(), total);
-                    result = streamRunner.run(catCommand(spec.path), monitored,
+                    result = streamRunner.run(sentry ? SentryExportEvidence.STREAM_PREFIX
+                            + "cat " + shellQuote(spec.path) : catCommand(spec.path), monitored,
                             Math.min(MAX_FILE_BYTES, remaining));
                     output.rethrowFailure();
                 } catch (Throwable error) {
@@ -457,7 +487,7 @@ final class CompatibilityBundleExporter {
                     if (control.isCancellationRequested()) throw new CancellationException();
                     try { checked.rethrowFailure(); }
                     catch (IOException localFailure) { throw localFailure; }
-                    result = StreamResult.failure(summary(error), -1, 0L);
+                    result = StreamResult.failure(com.byd.extend.remote.CameraViewingDiagnostics.describe(error), -1, 0L);
                 }
                 checkCancelled(control);
                 long size = temp.isFile() ? temp.length() : 0L;
@@ -469,7 +499,7 @@ final class CompatibilityBundleExporter {
                     } else {
                         space.check(size);
                         zip.putNextEntry(new ZipEntry(record.entry));
-                        copyFile(temp, zip, control, progress, spec.path,
+                        record.sha256 = copyFile(temp, zip, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
                         zip.closeEntry();
                         record.sizeBytes = size;
@@ -486,7 +516,7 @@ final class CompatibilityBundleExporter {
                     } else {
                         space.check(size);
                         zip.putNextEntry(new ZipEntry(record.entry));
-                        copyFile(temp, zip, control, progress, spec.path,
+                        record.sha256 = copyFile(temp, zip, control, progress, spec.path,
                                 remoteIndex + 1, remote.size(), total);
                         zip.closeEntry();
                         record.status = "partial";
@@ -681,6 +711,10 @@ final class CompatibilityBundleExporter {
             specs.add(new TextSpec(directory + "package.txt", "huawei_package_metadata",
                     "dumpsys package " + packageName));
         }
+        specs.add(new TextSpec("packages/com.byd.sentrymode/paths.txt", "sentry_package_paths",
+                "pm path " + SentryExportEvidence.PACKAGE));
+        specs.add(new TextSpec("packages/com.byd.sentrymode/package.txt", "sentry_package_metadata",
+                "dumpsys package " + SentryExportEvidence.PACKAGE));
         return specs;
     }
 
@@ -693,6 +727,14 @@ final class CompatibilityBundleExporter {
         String externalPath = steering.selection == null ? ""
                 : steering.selection.externalConfigurationPath;
         List<EvidenceText> text = new ArrayList<>();
+        try {
+            text.add(new EvidenceText("packages/com.byd.sentrymode/metadata.json", "sentry_package_identity",
+                    "PackageManager " + SentryExportEvidence.PACKAGE, SentryExportEvidence.metadata(context), null, 0));
+        } catch (Exception failure) {
+            String cause = com.byd.extend.remote.CameraViewingDiagnostics.describe(failure);
+            text.add(new EvidenceText("packages/com.byd.sentrymode/metadata.json", "sentry_package_identity",
+                    "PackageManager " + SentryExportEvidence.PACKAGE, "", cause, -1));
+        }
         text.add(new EvidenceText(
                 "camera/autovideo-package.json", "autovideo_package_metadata",
                 "PackageManager applicationInfo " + PACKAGE_NAME,
@@ -976,16 +1018,18 @@ final class CompatibilityBundleExporter {
     static CommandResult fromAdbResult(LocalAdbClient.Result result) {
         if (result.ok) return CommandResult.success(result.output);
         String error = result.authorizationRequired ? "authorization_required" : result.error;
+        if (result.cause != null) error += "\n" + com.byd.extend.remote.CameraViewingDiagnostics.describe(result.cause);
         return CommandResult.failure(result.output, error, result.exitCode);
     }
 
     private static StreamResult fromAdbResult(LocalAdbClient.Result result, long bytes) {
         if (result.ok) return StreamResult.success(result.exitCode, bytes);
         String error = result.authorizationRequired ? "authorization_required" : result.error;
+        if (result.cause != null) error += "\n" + com.byd.extend.remote.CameraViewingDiagnostics.describe(result.cause);
         return StreamResult.failure(error, result.exitCode, bytes);
     }
 
-    private static void copyFile(
+    static String copyFile(
             File source,
             OutputStream output,
             ExportControl control,
@@ -996,12 +1040,14 @@ final class CompatibilityBundleExporter {
             long total) throws IOException {
         byte[] buffer = new byte[BUFFER_SIZE];
         long copied = 0L;
+        java.security.MessageDigest digest = SentryExportEvidence.digest();
         try (FileInputStream input = new FileInputStream(source)) {
             int read;
             while ((read = input.read(buffer)) >= 0) {
                 if (read == 0) continue;
                 checkCancelled(control);
                 output.write(buffer, 0, read);
+                digest.update(buffer, 0, read);
                 copied += read;
                 if (progress != null) {
                     progress.report(Progress.Phase.ZIP, path, index, count,
@@ -1009,6 +1055,7 @@ final class CompatibilityBundleExporter {
                 }
             }
         }
+        return SentryExportEvidence.hex(digest.digest());
     }
 
     private static void writeChecked(
@@ -1055,6 +1102,8 @@ final class CompatibilityBundleExporter {
                     .append(",\"source\":").append(quote(record.source))
                     .append(",\"status\":").append(quote(record.status))
                     .append(",\"size_bytes\":").append(record.sizeBytes)
+                    .append(",\"sha256\":").append(quote(record.sha256))
+                    .append(",\"resolved_path\":").append(quote(record.resolvedPath))
                     .append(",\"error\":").append(quote(record.error)).append('}');
         }
         return json.append("]}").toString();
@@ -1398,7 +1447,7 @@ final class CompatibilityBundleExporter {
     private static final class RemoteSpec { final String path, type; RemoteSpec(String p, String t) { path = p; type = t; } }
     private static final class SourceRecord {
         final String type, entry, source; final long snapshotBytes; String status = "missing";
-        String error; long sizeBytes;
+        String error, sha256, resolvedPath; long sizeBytes;
         SourceRecord(String t, String e, String s, long b) {
             type = t; entry = e; source = s; snapshotBytes = b;
         }

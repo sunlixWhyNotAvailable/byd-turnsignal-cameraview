@@ -31,6 +31,7 @@
         android:required="false" />
 
     <queries>
+        <package android:name="com.byd.sentrymode" />
         <package android:name="com.byd.appstartmanagement" />
         <package android:name="com.byd.turnsignalguard.capture" />
         <package android:name="com.bydhud.app" />
