@@ -308,7 +308,7 @@ private fun readReverse(
     return ReverseUiState(
         enabled = preferences.getBoolean(
             ReverseCameraController.PREF_ENABLED, ReverseCameraController.DEFAULT_ENABLED),
-        switchByGear = preferences.getBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, false),
+        gearSwitching = com.byd.extend.ReverseGearSwitching.read(preferences),
         section = enumPreference(preferences, UiSelectionPreferences.REVERSE_SECTION,
             CameraSection.Parameters),
         selectedElement = selectedElement,

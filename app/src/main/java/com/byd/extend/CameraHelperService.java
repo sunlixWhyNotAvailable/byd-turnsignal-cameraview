@@ -80,6 +80,8 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.PARKING_CAMERA_SETTINGS_CHANGED";
     private static final String ACTION_REVERSE_SETTINGS_CHANGED =
             "com.byd.extend.action.REVERSE_SETTINGS_CHANGED";
+    private static final String ACTION_REVERSE_GEAR_SWITCHING_CHANGED =
+            "com.byd.extend.action.REVERSE_GEAR_SWITCHING_CHANGED";
     private static final String ACTION_MIRROR_SETTINGS_CHANGED =
             "com.byd.extend.action.MIRROR_SETTINGS_CHANGED";
     private static final String ACTION_MIRROR_BUTTON =
@@ -693,6 +695,11 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_REVERSE_SETTINGS_CHANGED));
     }
 
+    static void reverseGearSwitchingChanged(Context context) {
+        context.startService(new Intent(context, CameraHelperService.class)
+                .setAction(ACTION_REVERSE_GEAR_SWITCHING_CHANGED));
+    }
+
     /**
      * Routes one already-filtered steering-button press.  The accessibility service is the
      * caller's owner; this method never starts or wakes the runtime for a key event.
@@ -1172,6 +1179,8 @@ public final class CameraHelperService extends Service {
             cameraRuntime.settingsChanged("trigger");
         } else if (ACTION_PARKING_CAMERA_SETTINGS_CHANGED.equals(action)) {
             cameraRuntime.settingsChanged("parking");
+        } else if (ACTION_REVERSE_GEAR_SWITCHING_CHANGED.equals(action)) {
+            cameraRuntime.settingsChanged("reverse_gear");
         } else if (ACTION_REVERSE_SETTINGS_CHANGED.equals(action)) {
             cameraRuntime.settingsChanged("reverse");
         } else if (ACTION_MIRROR_SETTINGS_CHANGED.equals(action)) {

@@ -25,7 +25,7 @@ final class CameraRuntimeHost {
             MOTION_UNBIND_WORKER = 21, MOTION_SOURCE_FRAME = 28;
     static final int VIEW_ATTACH = 22, VIEW_DETACH = 23, VIEW_REGISTER_HELPER = 24,
             VIEW_UPDATE_OUTPUT = 25, VIEW_MARK_CHANNEL_UNAVAILABLE = 26,
-            VIEW_UPDATE_CABIN_MIRROR = 27, UPDATE_DISPLAY_STATE = 29;
+            VIEW_UPDATE_CABIN_MIRROR = 27, UPDATE_DISPLAY_STATE = 29, NATIVE_DIRECTION_ACK = 30;
     static final String CALLBACK = "com.byd.extend.ICameraRuntimeClient";
     static final int POWER_QUICKBOOT = 1, POWER_SCREEN_OFF = 2, POWER_SCREEN_ON = 3,
             POWER_USER_PRESENT = 4;
@@ -123,7 +123,7 @@ final class CameraRuntimeHost {
         if (Binder.getCallingUid() != appUid) throw new SecurityException("camera app caller required");
         IBinder owner = operation == ATTACH ? null : data.readStrongBinder();
         // Decode on the Binder thread; a Parcel must never outlive its transaction.
-        Bundle settings = operation == ATTACH || operation == SETTINGS || operation == ACK_SETTINGS
+        Bundle settings = operation == ATTACH || operation == SETTINGS || operation == ACK_SETTINGS || operation == NATIVE_DIRECTION_ACK
                 ? data.readBundle(getClass().getClassLoader()) : null;
         IBinder callback = operation == ATTACH ? data.readStrongBinder() : null;
         boolean flag = operation == ATTACH || operation == SETTINGS
@@ -160,6 +160,7 @@ final class CameraRuntimeHost {
                     event("camera_runtime_attached", "pid", android.os.Process.myPid(), "retained", retained);
                     replayCameraPowerState();
                     helper.reportRetainedCameraState();
+                    reverse.reportNativeDirection("client_attached");
                     return changes;
                 case SETTINGS:
                     context.overlayAllowed = flag;
@@ -168,9 +169,17 @@ final class CameraRuntimeHost {
                     if (!"sync".equals(scope)) applySettings(scope);
                     return unsaved;
                 case ACK_SETTINGS: context.settings.acknowledge(settings); break;
+                case NATIVE_DIRECTION_ACK:
+                    if (settings == null || !(settings.get("source_epoch") instanceof Long)
+                            || !(settings.get("revision") instanceof Long)
+                            || settings.getLong("source_epoch") < 0 || settings.getLong("revision") < 0)
+                        throw new IllegalArgumentException("invalid native direction acknowledgement");
+                    reverse.acknowledgeNativeDirection(settings.getLong("source_epoch"), settings.getLong("revision"));
+                    break;
                 case STATUS:
                     replayCameraPowerState();
                     helper.reportRetainedCameraState();
+                    reverse.reportNativeDirection("status");
                     break;
                 case UPDATE_DISPLAY_STATE: return UpdateDisplayState.read(context);
                 case PANO:
@@ -1023,6 +1032,7 @@ final class CameraRuntimeHost {
         else if ("trigger".equals(scope)) blind.applyTriggerSettings();
         else if ("parking".equals(scope)) parking.settingsChanged();
         else if ("reverse".equals(scope)) reverse.settingsChanged();
+        else if ("reverse_gear".equals(scope)) reverse.gearSwitchingChanged();
         else if ("mirror".equals(scope)) mirror.settingsChanged();
         else if ("logging".equals(scope)) helper.configureLogging();
         else {

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gear_switch_no">No</string>
+    <string name="gear_switch_native">Native only</string>
+    <string name="gear_switch_ours">Ours only</string>
+    <string name="gear_switch_both">Both</string>
+</resources>

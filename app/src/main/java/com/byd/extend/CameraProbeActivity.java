@@ -1051,6 +1051,7 @@ public final class CameraProbeActivity extends ComponentActivity
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         preferences = getSharedPreferences("settings", MODE_PRIVATE);
+        ReverseGearSwitching.migrate(preferences);
         if (savedInstanceState != null) {
             cameraPermissionRequested = savedInstanceState.getBoolean(STATE_CAMERA_PERMISSION_REQUESTED);
             microphonePermissionPending = savedInstanceState.getBoolean(STATE_MICROPHONE_PERMISSION_PENDING);
@@ -4809,10 +4810,6 @@ public final class CameraProbeActivity extends ComponentActivity
             } else if (id == ToggleId.ReverseEnabled) {
                 preferences.edit().putBoolean(ReverseCameraController.PREF_ENABLED, value).apply();
                 CameraHelperService.reverseCameraSettingsChanged(this);
-            } else if (id == ToggleId.ReverseSwitchByGear) {
-                if (!ReverseCameraController.hasAnyFrontIntegration(preferences)) return;
-                preferences.edit().putBoolean(ReverseCameraController.PREF_SWITCH_BY_GEAR, value).apply();
-                CameraHelperService.reverseCameraSettingsChanged(this);
             } else if (id == ToggleId.AvmShowRaw) {
                 preferences.edit().putBoolean("debug_avm_show_raw", value).apply();
                 applyDebugPreviewMode();
@@ -5030,6 +5027,11 @@ public final class CameraProbeActivity extends ComponentActivity
                 || id == SelectionId.ParkingView || id == SelectionId.ReverseElement
                 || id == SelectionId.ReverseSource) {
             onProductionCameraSelectionChanged(id);
+        } else if (id == SelectionId.ReverseGearSwitching) {
+            ReverseGearSwitching.validate(index);
+            if (index >= ReverseGearSwitching.OURS && !ReverseCameraController.hasAnyFrontIntegration(preferences)) return;
+            preferences.edit().putInt(ReverseGearSwitching.KEY, index).remove(ReverseGearSwitching.LEGACY_KEY).apply();
+            CameraHelperService.reverseGearSwitchingChanged(this);
         } else if (id == SelectionId.ReverseTarget) {
             applyProductionReverseState();
             CameraHelperService.reverseCameraSettingsChanged(this);

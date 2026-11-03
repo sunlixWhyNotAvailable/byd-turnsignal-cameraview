@@ -22,7 +22,6 @@ final class ReverseCameraController {
     static final String PREF_WIDGET_VISIBLE = "reverse_camera_widget_visible";
     static final String PREF_CENTRAL_FRONT_INTEGRATED =
             "reverse_camera_front_1_integrated";
-    static final String PREF_SWITCH_BY_GEAR = "reverse_camera_switch_by_gear";
     static final boolean DEFAULT_ENABLED = false;
     static final boolean DEFAULT_VISIBLE = true;
     static final boolean DEFAULT_WIDGET_VISIBLE = false;
@@ -54,6 +53,10 @@ final class ReverseCameraController {
     private final DirectionState direction = new DirectionState();
     private final ReverseGearSessionPolicy.State sessionPolicy =
             new ReverseGearSessionPolicy.State();
+    private final ReverseGearSessionPolicy.NativeDirection nativeDirection =
+            new ReverseGearSessionPolicy.NativeDirection();
+    private final long nativeEpoch = SystemClock.elapsedRealtimeNanos();
+    private boolean lastOwnSwitching;
     private boolean stopping;
     private boolean retryScheduled;
     private boolean cleanupRetryScheduled;
@@ -96,6 +99,7 @@ final class ReverseCameraController {
         this.eventSink = eventSink;
         this.prioritySink = prioritySink;
         settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        lastOwnSwitching = switchByGear();
     }
 
     void attachHelper(CameraHelperMain.HelperBinder value) {
@@ -109,6 +113,8 @@ final class ReverseCameraController {
     }
 
     void settingsChanged() {
+        lastOwnSwitching = switchByGear();
+        updateNativeDirection(sessionPolicy.raw, sessionPolicy.gearValid, "settings_changed");
         if (!enabled()) {
             sessionPolicy.eligible = false;
             pendingAutomaticMode = -1;
@@ -128,12 +134,41 @@ final class ReverseCameraController {
     void setRuntimeAllowed(boolean allowed) {
         if (runtimeAllowed == allowed) return;
         runtimeAllowed = allowed;
+        updateNativeDirection(sessionPolicy.raw, sessionPolicy.gearValid, "vehicle_power");
         if (!allowed) {
             if (helper != null) helper.clearReverseSourceDemand();
             stop("vehicle_power_off", false);
         } else {
             evaluate();
         }
+    }
+
+    void gearSwitchingChanged() {
+        if (lastOwnSwitching != switchByGear()) {
+            sessionPolicy.eligible = false;
+            settingsChanged();
+        } else {
+            updateSessionPolicy(sessionPolicy.raw, sessionPolicy.gearValid, "gear_switch_setting");
+            evaluate();
+        }
+    }
+
+    private void updateNativeDirection(int raw, boolean valid, String source) {
+        if (nativeDirection.update(!shutdown && enabled() && panoVisible
+                && ReverseGearSwitching.nativeView(ReverseGearSwitching.read(settings)), valid, raw))
+            reportNativeDirection(source);
+    }
+
+    void reportNativeDirection(String source) {
+        emit("reverse_native_direction", "source_epoch", nativeEpoch,
+                "revision", nativeDirection.revision, "session", nativeDirection.session,
+                "active", nativeDirection.active, "target", nativeDirection.pendingTarget(),
+                "gear_raw", sessionPolicy.raw, "gear_switch_mode", ReverseGearSwitching.read(settings),
+                "source_event", source);
+    }
+
+    void acknowledgeNativeDirection(long epoch, long revision) {
+        if (epoch == nativeEpoch) nativeDirection.acknowledge(revision);
     }
 
     /**
@@ -229,7 +264,8 @@ final class ReverseCameraController {
                 gearValid = false;
                 reverse = false;
                 ReverseGearSessionPolicy.update(
-                        sessionPolicy, switchByGear(), false, -1, panoVisible);
+                        sessionPolicy, followsPanorama(), false, -1, panoVisible);
+                updateNativeDirection(-1, false, "gear_helper_unavailable");
                 sessionPolicy.gear = previousGear;
                 stop("gear_helper_unavailable", false, preserveDirection);
             } else if ("camera_opened".equals(kind)
@@ -327,10 +363,11 @@ final class ReverseCameraController {
         ReverseGearSessionPolicy.Gear previousGear = sessionPolicy.gear;
         direction.rememberForTelemetryLoss(sessionPolicy.eligible, valid);
         ReverseGearSessionPolicy.Decision decision = ReverseGearSessionPolicy.update(
-                sessionPolicy, switching, valid, raw, panoVisible);
+                sessionPolicy, followsPanorama(), valid, raw, panoVisible);
         if (!valid && direction.hasRetryMode()) sessionPolicy.gear = previousGear;
         gearValid = sessionPolicy.gearValid;
         reverse = gearValid && sessionPolicy.gear == ReverseGearSessionPolicy.Gear.REVERSE;
+        updateNativeDirection(raw, gearValid, source);
         emit("reverse_camera_decision", "gear_valid", gearValid,
                 "reverse", reverse, "pano_visible", panoVisible,
                 "switch_by_gear", switching, "eligible", decision.eligible,
@@ -348,7 +385,7 @@ final class ReverseCameraController {
             pendingAutomaticMode = -1;
             direction.reset();
         }
-        if (decision.hasTarget()) {
+        if (switching && decision.hasTarget()) {
             if (direction.acceptGearTarget(decision.targetMode, decision.gearEdge)) {
                 pendingAutomaticMode = decision.targetMode;
                 if (switching) requestAutomaticMode(decision.targetMode, source);
@@ -358,6 +395,7 @@ final class ReverseCameraController {
 
     void shutdown() {
         shutdown = true;
+        updateNativeDirection(-1, false, "shutdown");
         CameraHelperMain.HelperBinder activeHelper = helper;
         if (activeHelper != null) {
             activeHelper.invalidateReverseOverlayShows(0, "controller_shutdown");
@@ -393,8 +431,8 @@ final class ReverseCameraController {
         if (!enabled() || !sessionPolicy.eligible || helper == null) {
             String reason;
             if (!enabled()) reason = "disabled";
-            else if (!switchByGear() && !gearValid) reason = "invalid_gear";
-            else if (!switchByGear() && !reverse) reason = "not_reverse";
+            else if (!followsPanorama() && !gearValid) reason = "invalid_gear";
+            else if (!followsPanorama() && !reverse) reason = "not_reverse";
             else if (helper == null) reason = "helper_unavailable";
             else reason = "session_ineligible";
             boolean preserveDirection = enabled() && !gearValid
@@ -1089,12 +1127,12 @@ final class ReverseCameraController {
     }
 
     static boolean switchByGear(SharedPreferences settings) {
-        try {
-            return settings.getBoolean(PREF_SWITCH_BY_GEAR, false)
-                    && hasAnyFrontIntegration(settings);
-        } catch (RuntimeException invalidPreference) {
-            return false;
-        }
+        return ReverseGearSwitching.own(ReverseGearSwitching.read(settings), hasAnyFrontIntegration(settings));
+    }
+
+    private boolean followsPanorama() {
+        return ReverseGearSwitching.followsPanorama(ReverseGearSwitching.read(settings),
+                hasAnyFrontIntegration(settings));
     }
 
     private int nextRequestId() {

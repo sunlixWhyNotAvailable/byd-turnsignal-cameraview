@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gear_switch_no">否</string>
+    <string name="gear_switch_native">仅原生</string>
+    <string name="gear_switch_ours">仅本应用</string>
+    <string name="gear_switch_both">两者</string>
+</resources>

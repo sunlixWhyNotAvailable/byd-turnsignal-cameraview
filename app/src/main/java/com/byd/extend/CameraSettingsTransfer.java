@@ -203,7 +203,8 @@ public final class CameraSettingsTransfer {
             GeometryResolver geometry) {
         if (preferences == null || parsed == null) throw new IllegalArgumentException("null argument");
         int version = presetVersion(parsed);
-        Map<String, Object> settings = cameraSettingsMap(parsed);
+        Map<String, Object> settings = new LinkedHashMap<>(cameraSettingsMap(parsed));
+        ReverseGearSwitching.normalizeImport(settings);
         validateCameraSettings(settings, version);
         // Mirror's active state is replaced only when the file carries its
         // active group.  A v1 file, or a v2 file that omits the optional
@@ -238,6 +239,9 @@ public final class CameraSettingsTransfer {
         preserveMissingDefaultOnCameraOptions(editor, preferences, settings);
         preserveMissingReverseDisplayState(editor, preferences, settings);
         preserveMissingBlindHoldDurations(editor, preferences, settings);
+        editor.remove(ReverseGearSwitching.LEGACY_KEY);
+        if (!settings.containsKey(ReverseGearSwitching.KEY))
+            editor.putInt(ReverseGearSwitching.KEY, ReverseGearSwitching.read(preferences));
         for (Map.Entry<String, Object> entry : settings.entrySet()) {
             putCameraValue(editor, entry.getKey(), entry.getValue());
         }
@@ -279,6 +283,7 @@ public final class CameraSettingsTransfer {
             }
             copy.put(entry.getKey(), entry.getValue());
         }
+        ReverseGearSwitching.normalizeImport(copy);
         validateLegacySettings(copy);
         String interiorKey = RemoteCameraView.PREFERENCE_KEY;
         boolean preserveInteriorCameras = !copy.containsKey(interiorKey)
@@ -550,6 +555,7 @@ public final class CameraSettingsTransfer {
         out.put("parking_camera_scale_sync", bool(p, "parking_camera_scale_sync", false));
         out.put(ReverseCameraController.PREF_ENABLED,
                 bool(p, ReverseCameraController.PREF_ENABLED, ReverseCameraController.DEFAULT_ENABLED));
+        out.put(ReverseGearSwitching.KEY, ReverseGearSwitching.read(p));
         out.put(ReverseCameraController.PREF_BACKGROUND_VISIBLE,
                 ReverseCameraController.loadVisibility(p, ReverseCameraLayout.BACKGROUND_PANE_ID));
         out.put(ReverseCameraController.PREF_WIDGET_VISIBLE,
@@ -1076,6 +1082,7 @@ public final class CameraSettingsTransfer {
         if (isBooleanKey(key)) { if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key); return; }
         if (isIntegerKey(key)) {
             int number = intValue(value, key);
+            if (key.equals(ReverseGearSwitching.KEY)) ReverseGearSwitching.validate(number);
             if (key.endsWith("_strength_percent")) requireRange(number, 1, 100, key);
             if ((key.endsWith("_scale") || key.endsWith("_scale_percent"))
                     && (number < BlindSpotOverlayController.MIN_SCALE_PERCENT
@@ -1343,6 +1350,8 @@ public final class CameraSettingsTransfer {
 
     private static Set<String> cameraPresetKeys() {
         LinkedHashSet<String> keys = new LinkedHashSet<>();
+        keys.add(ReverseGearSwitching.KEY);
+        keys.add(ReverseGearSwitching.LEGACY_KEY);
         keys.add(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY);
         keys.add(BlindSpotOverlayController.PREF_ENABLED); keys.add(BlindSpotOverlayController.PREF_FRONT_ENABLED);
         keys.add(BlindSpotOverlayController.PREF_REAR_SUPPRESS_WHILE_PANORAMA);
@@ -1448,7 +1457,8 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isOptionalCameraPresetKey(String key, int version) {
-        return key != null && (key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
+        return key != null && (key.equals(ReverseGearSwitching.KEY) || key.equals(ReverseGearSwitching.LEGACY_KEY)
+                || key.startsWith("reverse_camera_front_1_") && !isBorderKey(key)
                 || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY) && version < VERSION
                 || version < REVERSE_GUIDANCE_VERSION && isReverseGuidanceKey(key)
                 || isNewReverseDisplayKey(key)
@@ -1615,7 +1625,8 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isBooleanKey(String key) {
-        return key.endsWith("_enabled") || key.endsWith("_turn_required") || key.endsWith("_bsd_only")
+        return key.equals(ReverseGearSwitching.LEGACY_KEY)
+                || key.endsWith("_enabled") || key.endsWith("_turn_required") || key.endsWith("_bsd_only")
                 || key.endsWith("_mirror") || key.endsWith("_visible") || key.endsWith("_integrated")
                 || key.endsWith("_add_central") || key.endsWith("_correction")
                 || key.endsWith("_mirrored")
@@ -1697,6 +1708,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static void validateLegacyBounds(String key, Object value) {
+        if (key.equals(ReverseGearSwitching.KEY)) ReverseGearSwitching.validate(intValue(value, key));
         if (value instanceof Number) {
             double n = ((Number) value).doubleValue();
             if (!Double.isFinite(n)) throw new IllegalArgumentException("nonfinite legacy value");

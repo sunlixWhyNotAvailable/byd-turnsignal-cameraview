@@ -56,6 +56,56 @@ final class ReverseGearSessionPolicy {
 
     private ReverseGearSessionPolicy() {}
 
+    /** Retained OEM intent: acknowledgement prevents replay from overriding a later manual tap. */
+    static final class NativeDirection {
+        boolean active;
+        long session, revision;
+        private Gear gear = Gear.UNKNOWN;
+        private int target = -1;
+        private int interruptedTarget = -1;
+        private long delivered = -1;
+
+        boolean update(boolean allowed, boolean valid, int raw) {
+            Gear next = valid ? gearForRaw(raw) : Gear.UNKNOWN;
+            if (!allowed) {
+                if (!active) return false;
+                active = false;
+                gear = Gear.UNKNOWN;
+                target = -1;
+                interruptedTarget = -1;
+                revision++;
+                return true;
+            }
+            if (!active) {
+                active = true;
+                session++;
+                gear = next;
+                target = coldMode(next);
+                revision++;
+                return true;
+            }
+            if (next == Gear.UNKNOWN) {
+                if (pendingTarget() < 0) return false;
+                interruptedTarget = target;
+                target = -1;
+                revision++;
+                return true;
+            }
+            int selected = gear == Gear.UNKNOWN ? coldMode(next)
+                    : next != gear ? modeForGearEdge(next) : -1;
+            if (selected < 0) selected = interruptedTarget;
+            interruptedTarget = -1;
+            gear = next;
+            if (selected < 0) return false;
+            target = selected;
+            revision++;
+            return true;
+        }
+
+        int pendingTarget() { return active && delivered != revision ? target : -1; }
+        void acknowledge(long value) { if (value == revision) delivered = value; }
+    }
+
     static Gear gearForRaw(int raw) {
         switch (raw) {
             case RAW_PARK:

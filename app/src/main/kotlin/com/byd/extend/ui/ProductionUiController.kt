@@ -401,14 +401,6 @@ class ProductionUiController @JvmOverloads constructor(
                         MirrorBackendActionKind.SetReturnOnAppOpen,
                         value = action.value.toString(), enabled = action.value))
                 }
-                action.target == ToggleTarget.Simple(ToggleId.ReverseSwitchByGear) -> {
-                    if (state.reverse.hasAnyFrontIntegration()) {
-                        state = state.copy(reverse = state.reverse.copy(switchByGear = action.value))
-                    } else {
-                        // Programmatic actions match the disabled row and preserve the saved value.
-                        typedBackendHandled = true
-                    }
-                }
                 action.target is ToggleTarget.Profile &&
                     (action.target as ToggleTarget.Profile).profile == CameraProfileId.Mirror -> {
                     val target = action.target as ToggleTarget.Profile

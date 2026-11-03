@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="gear_switch_no">Нет</string>
+    <string name="gear_switch_native">Только штатная</string>
+    <string name="gear_switch_ours">Только наша</string>
+    <string name="gear_switch_both">Обе</string>
+</resources>

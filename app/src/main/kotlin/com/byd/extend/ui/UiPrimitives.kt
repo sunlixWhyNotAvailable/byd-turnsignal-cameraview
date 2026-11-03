@@ -670,6 +670,7 @@ internal fun ChoiceField(
     enabled: Boolean = true,
     hudCompact: Boolean = false,
     optionFonts: List<FontFamily>? = null,
+    optionEnabled: (Int) -> Boolean = { true },
 ) {
     var expanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -710,7 +711,7 @@ internal fun ChoiceField(
                 Column(Modifier.width(menuWidth).clip(RoundedCornerShape(6.dp))
                     .border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp)).background(colors.panel)) {
                     choices.forEachIndexed { index, option ->
-                        val optionPress = rememberPressFeedback(enabled)
+                        val optionPress = rememberPressFeedback(enabled && optionEnabled(index))
                         val choose = rememberVisualFirstClick {
                             val selectionPress = PressInteraction.Press(Offset.Zero)
                             fieldPress.interactionSource.tryEmit(selectionPress)
@@ -723,9 +724,10 @@ internal fun ChoiceField(
                                 colors, optionPress.pressed))
                             .then(optionPress.modifier)
                             .clickable(interactionSource = optionPress.interactionSource, indication = null,
-                                enabled = enabled, role = Role.Button) { choose() },
+                                enabled = enabled && optionEnabled(index), role = Role.Button) { choose() },
                             contentAlignment = Alignment.Center) {
-                            Text(option, color = if (index == safeSelected) selectedContent else colors.text,
+                            Text(option, color = if (!optionEnabled(index)) colors.muted.copy(alpha = .5f)
+                                else if (index == safeSelected) selectedContent else colors.text,
                                 fontSize = 14.sp,
                                 fontFamily = optionFonts?.getOrNull(index),
                                 fontWeight = if (index == safeSelected) FontWeight.SemiBold else FontWeight.Normal,

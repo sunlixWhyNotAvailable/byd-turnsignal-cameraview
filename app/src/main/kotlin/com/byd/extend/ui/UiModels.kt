@@ -198,7 +198,6 @@ enum class ToggleId {
     ReverseFrontIntegration,
     ReverseDirectionGuidelines,
     ReverseCameraShiftWithSteering,
-    ReverseSwitchByGear,
     MirrorEnabled,
     MirrorFrontIntegration,
     MirrorSuppressWhilePanorama,
@@ -223,6 +222,7 @@ enum class SelectionId {
     ParkingView,
     ReverseElement,
     ReverseTarget,
+    ReverseGearSwitching,
     ReverseSource,
     MirrorTarget,
     MirrorSource,
@@ -649,7 +649,7 @@ data class ReverseGeometryUiState(
 @Immutable
 data class ReverseUiState(
     val enabled: Boolean = false,
-    val switchByGear: Boolean = false,
+    val gearSwitching: Int = 0,
     val panoramaOperation: OperationUiState = OperationUiState(),
     val section: CameraSection = CameraSection.Parameters,
     val selectedElement: ReverseElement = ReverseElement.RearLeft,

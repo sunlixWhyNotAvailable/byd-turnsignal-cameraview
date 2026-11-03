@@ -64,11 +64,14 @@ internal fun ReverseScreen(
                     ToggleTarget.Reverse(ToggleId.ReverseFrontIntegration, selected), it)) }, colors,
             ) }
         }
-        row("profile-switch-by-gear") { SwitchLine(strings.text("Перемикати за передачею", "Switch cameras by gear"),
-            strings.text("Автоматично обирати передню/задню камеру", "Select front/rear camera on gear edges"),
-            state.switchByGear,
-            { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.ReverseSwitchByGear), it)) }, colors,
-            enabled = gearSwitchEnabled) }
+        row("profile-switch-by-gear") { ChoiceField(strings.text("Перемикати за передачею", "Switch cameras by gear"),
+            listOf(strings.resource(com.byd.extend.R.string.gear_switch_no),
+                strings.resource(com.byd.extend.R.string.gear_switch_native),
+                strings.resource(com.byd.extend.R.string.gear_switch_ours),
+                strings.resource(com.byd.extend.R.string.gear_switch_both)),
+            state.gearSwitching,
+            { onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.ReverseGearSwitching), it)) }, colors,
+            optionEnabled = { it < 2 || gearSwitchEnabled }) }
         if (selected == ReverseElement.Widget) {
             row("profile-widget-key") { ReverseWidgetLearningRow(state.steeringKeyCode, strings, colors, onAction) }
         }

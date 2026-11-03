@@ -31,6 +31,7 @@ final class CameraRuntimeClient {
     private volatile boolean detached;
     // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
     private ClusterFullscreenController cluster;
+    private final NativePanoramaController nativePanorama;
     private String lastVehiclePowerState;
     private java.util.function.BiConsumer<Boolean, Boolean> vehiclePowerListener;
 
@@ -127,6 +128,14 @@ final class CameraRuntimeClient {
         this.handler = handler;
         this.events = events;
         settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        ReverseGearSwitching.migrate(settings);
+        nativePanorama = new NativePanoramaController(this.context, handler, settings, this::platformEvent,
+                (epoch, revision) -> {
+                    Bundle acknowledgement = new Bundle();
+                    acknowledgement.putLong("source_epoch", epoch);
+                    acknowledgement.putLong("revision", revision);
+                    command(CameraRuntimeHost.NATIVE_DIRECTION_ACK, false, "", acknowledgement);
+                });
         settings.registerOnSharedPreferenceChangeListener(preferenceListener);
     }
 
@@ -196,6 +205,7 @@ final class CameraRuntimeClient {
     }
 
     private synchronized void syncPreferenceEdits() {
+        nativePanorama.settingsChanged();
         if (!detached && cluster != null) cluster.settingsChanged();
         // Preference-only edits (language, restore-on-open, etc.) have no service action.
         // Push changes to an attached runtime; never start a helper just for a disk write.
@@ -283,10 +293,13 @@ final class CameraRuntimeClient {
         // Reconcile current state after a process gap; do not recreate live cameras or tracks.
         platformCommand(CameraRuntimeHost.POWER, 0, "");
         platformCommand(CameraRuntimeHost.NAV_VOLUME, 0, "");
+        nativePanorama.visibility(false, false);
         if (pano == null) {
             pano = new OemCameraVisibilityRuntime(context, handler,
-                    (known, active, source) -> platformCommand(CameraRuntimeHost.PANO,
-                            known ? (active ? 1 : 0) : -1, source), this::platformEvent);
+                    (known, active, source) -> {
+                        nativePanorama.visibility(known, active);
+                        platformCommand(CameraRuntimeHost.PANO, known ? (active ? 1 : 0) : -1, source);
+                    }, this::platformEvent);
             pano.start();
         } else pano.reconcile();
     }
@@ -345,7 +358,10 @@ final class CameraRuntimeClient {
                 lastVehiclePowerOff = off;
                 lastVehiclePowerFailureCount = failures;
                 if (vehiclePowerListener != null) vehiclePowerListener.accept(known, off);
+                nativePanorama.power(!(known && off));
                 if (cluster != null) cluster.acceptEvent(line);
+            } else if ("reverse_native_direction".equals(kind)) {
+                nativePanorama.accept(new JSONObject(line));
             } else if ("shell_power_state".equals(kind) && cluster != null) {
                 cluster.acceptEvent(line);
             }
@@ -370,6 +386,7 @@ final class CameraRuntimeClient {
     }
 
     synchronized void shutdown() {
+        nativePanorama.close();
         // The existing global helper shutdown resolves unattached hosts as well.
         // Never initialize camera sources merely to shut the application down.
         if (shell != null) command(CameraRuntimeHost.STOP, false, "", null);
@@ -378,6 +395,7 @@ final class CameraRuntimeClient {
 
     synchronized void detach() {
         detached = true;
+        nativePanorama.close();
         UpdateHintRuntime.get(context).clearDisplayReader(this);
         vehiclePowerListener = null;
         settings.unregisterOnSharedPreferenceChangeListener(preferenceListener);
@@ -404,7 +422,8 @@ final class CameraRuntimeClient {
             data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
             data.writeInt(operation);
             data.writeStrongBinder(callback);
-            if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.ACK_SETTINGS)
+            if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.ACK_SETTINGS
+                    || operation == CameraRuntimeHost.NATIVE_DIRECTION_ACK)
                 data.writeBundle(bundle);
             if (operation == CameraRuntimeHost.SETTINGS || operation == CameraRuntimeHost.VISIBILITY
                     || operation == CameraRuntimeHost.PREVIEW) data.writeInt(flag ? 1 : 0);
@@ -418,7 +437,7 @@ final class CameraRuntimeClient {
             return operation == CameraRuntimeHost.SETTINGS
                     ? reply.readBundle(getClass().getClassLoader()) : Bundle.EMPTY;
         } catch (Exception error) {
-            shell = null; camera = null;
+            if (operation != CameraRuntimeHost.NATIVE_DIRECTION_ACK) { shell = null; camera = null; }
             failure("camera_runtime_command_failed_" + operation, error);
             return null;
         } finally { data.recycle(); reply.recycle(); }
@@ -426,7 +445,7 @@ final class CameraRuntimeClient {
 
     private void failure(String kind, Exception error) {
         try { deliverEvent(new org.json.JSONObject().put("kind", kind)
-                .put("error", error.toString()).toString()); }
+                .put("error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error)).toString()); }
         catch (org.json.JSONException ignored) { /* fixed String fields */ }
     }
 
