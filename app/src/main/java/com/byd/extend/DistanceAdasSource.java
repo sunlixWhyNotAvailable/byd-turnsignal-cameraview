@@ -44,9 +44,17 @@ final class DistanceAdasSource {
     private boolean started;
     private volatile long epoch;
     private long generation, count, startedAt, expired;
+    private final DiagnosticTimingWindow timing = new DiagnosticTimingWindow(
+            "work_us", "queue_ms", "decode_us", "decode_cpu_us", "model_us", "model_cpu_us",
+            "publish_us", "publish_cpu_us", "age_ms");
     private DistanceFrame current=DistanceFrame.unavailable(0,0,"inactive");
     private final Runnable stale=()-> {
-        if(needed && current.valid && !current.fresh(SystemClock.elapsedRealtime())) invalidate("stale");
+        if(needed && current.valid && !current.fresh(SystemClock.elapsedRealtime())) {
+            if (DiagnosticLogPolicy.extended()) emit("distance_stale_detail", "generation", generation,
+                    "frame_received_ms", current.receivedAt,
+                    "expiry_late_ms", SystemClock.elapsedRealtime()-current.receivedAt-DistanceFrame.STALE_MS);
+            invalidate("stale");
+        }
     };
 
     DistanceAdasSource(Context identity,Handler handler,Consumer<DistanceFrame> frames,BiConsumer<String,Object[]> events) {
@@ -62,6 +70,7 @@ final class DistanceAdasSource {
         startedAt=SystemClock.elapsedRealtime(); count=0;
         final long connection=++epoch;
         ++generation;
+        timing.clear();
         try {
             if(android.os.Process.myUid()!=2000) throw new SecurityException("ADAS reader requires executing shell UID 2000");
             if(loader==null) {
@@ -128,12 +137,18 @@ final class DistanceAdasSource {
         if(!active(packet.connection) || !packets.current(token) || !started || !subscribed.contains(DATA)) return;
         long received=packet.received, now=SystemClock.elapsedRealtime();
         if(now<received || now-received>=DistanceFrame.STALE_MS) { expired++; invalidate("stale_delivery"); return; }
-        long start=SystemClock.elapsedRealtimeNanos();
+        boolean measure=timing.enabled();
+        long policyRevision=DiagnosticLogPolicy.revision();
+        long start=measure?SystemClock.elapsedRealtimeNanos():0;
+        long cpuStart=measure?android.os.Debug.threadCpuTimeNanos():0;
         String operation="decode_model";
         try {
             List<AdasDistanceModel.Obstacle> objects=decoder.decode(packet.payload);
+            long decoded=measure?SystemClock.elapsedRealtimeNanos():0;
+            long decodedCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
             double[] distances=AdasDistanceModel.distances(objects);
-            long decoded=SystemClock.elapsedRealtimeNanos();
+            long modeled=measure?SystemClock.elapsedRealtimeNanos():0;
+            long modeledCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
             if(!active(packet.connection) || !packets.current(token)) return;
             DistanceFrame next=new DistanceFrame(generation,received,true,"ready",distances);
             if(!next.fresh(SystemClock.elapsedRealtime())) { expired++; invalidate("stale_delivery"); return; }
@@ -142,18 +157,23 @@ final class DistanceAdasSource {
             if(recovering) emit("distance_source_ready","generation",generation);
             operation="publish_frame";
             frames.accept(current);
-            long published=SystemClock.elapsedRealtimeNanos();
+            long published=measure?SystemClock.elapsedRealtimeNanos():0;
+            long publishedCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
             handler.removeCallbacks(stale);
             handler.postDelayed(stale,Math.max(0,received+DistanceFrame.STALE_MS-SystemClock.elapsedRealtime()));
-            if(DiagnosticLogPolicy.extended()) {
+            if(measure && policyRevision==DiagnosticLogPolicy.revision() && DiagnosticLogPolicy.extended()) {
                 operation="frame_diagnostic";
-                org.json.JSONArray values=new org.json.JSONArray(), boxes=new org.json.JSONArray();
-                for(double value:distances) values.put(Double.isNaN(value)?org.json.JSONObject.NULL:value);
-                for(AdasDistanceModel.Obstacle o:objects) boxes.put(new org.json.JSONArray(new double[]{o.x,o.y,o.length,o.width,o.heading}));
-                emit("distance_frame_detail","generation",generation,"distances_cm",values,"objects",boxes,
-                        "queue_ms",now-received,"decode_model_us",(decoded-start)/1000,
-                        "publish_us",(published-decoded)/1000,"age_ms",SystemClock.elapsedRealtime()-received,
-                        "replaced",packets.replaced(),"expired",expired);
+                Object[] report=timing.record(SystemClock.elapsedRealtime(), (published-start)/1000,
+                        now-received, (decoded-start)/1000, (decodedCpu-cpuStart)/1000,
+                        (modeled-decoded)/1000, (modeledCpu-decodedCpu)/1000,
+                        (published-modeled)/1000, (publishedCpu-modeledCpu)/1000,
+                        SystemClock.elapsedRealtime()-received);
+                if(report!=null) {
+                    Object[] fields=java.util.Arrays.copyOf(report,report.length+8);
+                    Object[] state={"generation",generation,"replaced",packets.replaced(),"expired",expired,"frames",count};
+                    System.arraycopy(state,0,fields,report.length,state.length);
+                    emit("distance_source_metrics",fields);
+                }
             }
         } catch(Throwable error) { error(operation,error); }
     }
@@ -162,6 +182,7 @@ final class DistanceAdasSource {
         invalidate(reason);
     }
     private void invalidate(String reason) {
+        timing.clear();
         boolean changed=current.valid || !reason.equals(current.status);
         current=DistanceFrame.unavailable(generation,SystemClock.elapsedRealtime(),reason);
         handler.removeCallbacks(stale);

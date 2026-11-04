@@ -15,7 +15,7 @@ import java.util.function.BiConsumer;
  *
  * <p>The stock process does not expose a stable public API for this state.  The tested broadcast
  * is therefore the live source and {@code sys.byd.pano_start} is read only during startup and
- * platform reconciliation. The cached state is replayed for status requests; there is
+ * platform reconciliation until a live edge arrives. The cached live state is replayed thereafter; there is
  * intentionally no property polling.</p>
  */
 final class OemCameraVisibilityRuntime {
@@ -29,14 +29,20 @@ final class OemCameraVisibilityRuntime {
 
     static final class State {
         private volatile int panoState = -1;
+        private boolean live;
 
-        boolean accept(String raw) {
+        boolean accept(String raw, boolean broadcast) {
+            if (!broadcast && live) return known();
             panoState = parseState(raw);
+            if (broadcast && known()) live = true;
             return panoState >= 0;
         }
 
+        boolean hasLiveState() { return live; }
+
         void invalidate() {
             panoState = -1;
+            live = false;
         }
 
         boolean known() {
@@ -88,7 +94,7 @@ final class OemCameraVisibilityRuntime {
         scheduleReconcile(true);
     }
 
-    /** Rechecks the startup property after attach/reconnect or a platform wake signal. */
+    /** Replays live state after attach/reconnect; reads the startup property only before live edges. */
     void reconcile() {
         scheduleReconcile(false);
     }
@@ -125,6 +131,8 @@ final class OemCameraVisibilityRuntime {
             synchronized (receiverLock) {
                 if (stopped) return;
                 try {
+                    // A new receiver lifetime may bootstrap; an attached receiver keeps its edges.
+                    state.invalidate();
                     context.registerReceiver(receiver, new IntentFilter(ACTION_PANO), null, handler);
                     receiverRegistered = true;
                 } catch (Throwable error) {
@@ -144,7 +152,10 @@ final class OemCameraVisibilityRuntime {
                     "registered", true, "source_event", sourceEvent);
         }
         if (stopped) return;
-        // One property read per explicit reconciliation; status requests only replay the cache.
+        if (state.hasLiveState()) {
+            emitVisibility("live_replay", ACTION_PANO);
+            return;
+        }
         String snapshot;
         try {
             snapshot = readSystemProperty(STARTUP_PROPERTY);
@@ -182,7 +193,7 @@ final class OemCameraVisibilityRuntime {
 
     private void acceptState(String raw, String source, String action) {
         if (!started || stopped) return;
-        if (!state.accept(raw)) {
+        if (!state.accept(raw, "broadcast".equals(source))) {
             emitVisibility(source, action, "invalid_pano_state");
             return;
         }
@@ -246,9 +257,6 @@ final class OemCameraVisibilityRuntime {
     }
 
     private static String summary(Throwable error) {
-        Throwable cause = error;
-        while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
-        String message = cause.getMessage();
-        return cause.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+        return com.byd.extend.remote.CameraViewingDiagnostics.describe(error);
     }
 }

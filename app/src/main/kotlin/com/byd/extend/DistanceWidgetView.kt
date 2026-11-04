@@ -10,7 +10,9 @@ class DistanceWidgetView(context: Context) : View(context) {
     private var settings = DistanceWidgetSettings()
     private var radius = 0f
     private var pixelScale = 1f
-    var drawTiming: ((Long) -> Unit)? = null
+    var drawTiming: ((Long, Long, Long) -> Unit)? = null
+    var sourceReceivedAt: Long = 0
+        private set
     private var readings: List<DistanceReading?> = List(8) { null }
     private var contours = emptyList<DistanceContour>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -23,6 +25,7 @@ class DistanceWidgetView(context: Context) : View(context) {
     private val clip = Path()
 
     fun update(value: DistanceWidgetSettings, cornerRadius: Float, frame: DistanceFrame, displayScale: Float = 1f) {
+        sourceReceivedAt = frame.receivedAt
         val nextRadius = cornerRadius * resources.displayMetrics.density * displayScale
         val nextReadings = if (frame.fresh(android.os.SystemClock.elapsedRealtime()))
             frame.distances().map { cm -> value.zoneAt(cm)?.let { DistanceReading(cm, it.color) } }
@@ -45,6 +48,9 @@ class DistanceWidgetView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         val timing = drawTiming.takeIf { DiagnosticLogPolicy.extended() }
         val started = if (timing != null) android.os.SystemClock.elapsedRealtimeNanos() else 0
+        val cpuStarted = if (timing != null) android.os.Debug.threadCpuTimeNanos() else 0
+        val policyRevision = DiagnosticLogPolicy.revision()
+        val age = if (timing != null) android.os.SystemClock.elapsedRealtime() - sourceReceivedAt else 0
         super.onDraw(canvas)
         val bounds = RectF(0f, 0f, width.toFloat(), height.toFloat())
         val inset = (1 - settings.profile.backgroundPercent / 100f) / 2
@@ -86,6 +92,8 @@ class DistanceWidgetView(context: Context) : View(context) {
             paint.style=Paint.Style.FILL
         }
         canvas.restore()
-        timing?.invoke((android.os.SystemClock.elapsedRealtimeNanos() - started) / 1000)
+        if (policyRevision == DiagnosticLogPolicy.revision() && DiagnosticLogPolicy.extended())
+            timing?.invoke((android.os.SystemClock.elapsedRealtimeNanos() - started) / 1000,
+                (android.os.Debug.threadCpuTimeNanos() - cpuStarted) / 1000, age)
     }
 }

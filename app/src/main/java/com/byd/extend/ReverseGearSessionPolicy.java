@@ -59,17 +59,20 @@ final class ReverseGearSessionPolicy {
     /** Retained OEM intent: acknowledgement prevents replay from overriding a later manual tap. */
     static final class NativeDirection {
         boolean active;
+        boolean manual;
+        private boolean automatic;
         long session, revision;
         private Gear gear = Gear.UNKNOWN;
         private int target = -1;
         private int interruptedTarget = -1;
         private long delivered = -1;
 
-        boolean update(boolean allowed, boolean valid, int raw) {
+        boolean update(boolean allowed, boolean automatic, boolean valid, int raw) {
             Gear next = valid ? gearForRaw(raw) : Gear.UNKNOWN;
             if (!allowed) {
                 if (!active) return false;
                 active = false;
+                manual = false;
                 gear = Gear.UNKNOWN;
                 target = -1;
                 interruptedTarget = -1;
@@ -78,12 +81,25 @@ final class ReverseGearSessionPolicy {
             }
             if (!active) {
                 active = true;
+                this.automatic = automatic;
+                manual = false;
                 session++;
                 gear = next;
-                target = coldMode(next);
+                target = automatic ? coldMode(next) : -1;
                 revision++;
                 return true;
             }
+            boolean enabledNow = automatic && !this.automatic;
+            this.automatic = automatic;
+            if (!automatic) {
+                gear = next;
+                interruptedTarget = -1;
+                if (manual || target < 0) return false;
+                target = -1;
+                revision++;
+                return true;
+            }
+            if (manual && next == Gear.UNKNOWN) return false;
             if (next == Gear.UNKNOWN) {
                 if (pendingTarget() < 0) return false;
                 interruptedTarget = target;
@@ -91,15 +107,26 @@ final class ReverseGearSessionPolicy {
                 revision++;
                 return true;
             }
-            int selected = gear == Gear.UNKNOWN ? coldMode(next)
+            int selected = enabledNow || gear == Gear.UNKNOWN ? coldMode(next)
                     : next != gear ? modeForGearEdge(next) : -1;
             if (selected < 0) selected = interruptedTarget;
             interruptedTarget = -1;
             gear = next;
             if (selected < 0) return false;
             target = selected;
+            manual = false;
             revision++;
             return true;
+        }
+
+        void selectManual(int mode, boolean valid, int raw) {
+            if (mode != MODE_FRONT && mode != MODE_REAR)
+                throw new IllegalArgumentException("Invalid manual panorama direction");
+            if (!active) update(true, false, valid, raw);
+            target = mode;
+            interruptedTarget = -1;
+            manual = true;
+            revision++;
         }
 
         int pendingTarget() { return active && delivered != revision ? target : -1; }

@@ -42,7 +42,8 @@ final class NativePanoramaController {
             if (closed) return;
             try {
                 if (!desired.accept(event.getLong("source_epoch"), event.getLong("revision"),
-                        event.getLong("session"), event.getBoolean("active"), event.getInt("target"))) return;
+                        event.getLong("session"), event.getBoolean("active"), event.getInt("target"),
+                        event.optBoolean("manual", false))) return;
                 reconcile();
             } catch (Exception failure) { failed("decode_intent", failure); }
         });
@@ -67,7 +68,10 @@ final class NativePanoramaController {
     private boolean allowed() {
         return !closed && powerAllowed && panoramaVisible && desired.active
                 && settings.getBoolean(ReverseCameraController.PREF_ENABLED, false)
-                && ReverseGearSwitching.nativeView(ReverseGearSwitching.read(settings));
+                && (desired.manual
+                    ? ReverseCameraController.loadWidgetVisible(settings)
+                        && ReverseCameraController.hasAnyFrontIntegration(settings)
+                    : ReverseGearSwitching.nativeView(ReverseGearSwitching.read(settings)));
     }
 
     private void reconcile() {
@@ -164,18 +168,20 @@ final class NativePanoramaController {
 
     static final class IntentState {
         long epoch = -1, revision = -1, session;
-        boolean active;
+        boolean active, manual;
         int target = -1;
 
-        boolean accept(long epoch, long revision, long session, boolean active, int target) {
-            if (epoch < 0 || revision < 0 || session < 0 || target < -1 || target > 1 || !active && target != -1)
+        boolean accept(long epoch, long revision, long session, boolean active, int target, boolean manual) {
+            if (epoch < 0 || revision < 0 || session < 0 || target < -1 || target > 1
+                    || !active && (target != -1 || manual))
                 throw new IllegalArgumentException("Invalid native panorama intent");
             if (epoch < this.epoch || epoch == this.epoch && revision < this.revision) return false;
             if (epoch == this.epoch && revision == this.revision
-                    && (session != this.session || active != this.active || target != this.target && target != -1))
+                    && (session != this.session || active != this.active || manual != this.manual
+                        || target != this.target && target != -1))
                 throw new IllegalArgumentException("Native intent changed without a revision");
             this.epoch = epoch; this.revision = revision; this.session = session;
-            this.active = active; this.target = target;
+            this.active = active; this.target = target; this.manual = manual;
             return true;
         }
     }

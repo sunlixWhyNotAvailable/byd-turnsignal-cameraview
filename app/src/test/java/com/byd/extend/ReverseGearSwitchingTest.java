@@ -18,6 +18,55 @@ import static org.robolectric.Shadows.shadowOf;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 33)
 public final class ReverseGearSwitchingTest {
+    @Test public void manualIntentWorksWithoutAutomaticOemSwitchingAndIsNotReplayed() {
+        NativeDirection state = new NativeDirection();
+        state.selectManual(MODE_FRONT, true, RAW_REVERSE);
+        assertTrue(state.manual);
+        assertEquals(MODE_FRONT, state.pendingTarget());
+        assertFalse(state.update(true, false, true, RAW_REVERSE));
+        assertEquals(MODE_FRONT, state.pendingTarget());
+        long firstTap = state.revision;
+        state.selectManual(MODE_REAR, true, RAW_REVERSE);
+        state.acknowledge(firstTap);
+        assertEquals(MODE_REAR, state.pendingTarget());
+        state.acknowledge(state.revision);
+        assertEquals(-1, state.pendingTarget());
+        assertFalse(state.update(true, false, true, RAW_DRIVE));
+        assertEquals(-1, state.pendingTarget());
+        assertTrue(state.update(false, false, true, RAW_DRIVE));
+        assertFalse(state.manual);
+        assertEquals(-1, state.pendingTarget());
+    }
+
+    @Test public void manualChoiceWithBothEnabledLastsUntilNextGearEdge() {
+        NativeDirection state = new NativeDirection();
+        state.update(true, true, true, RAW_REVERSE);
+        state.acknowledge(state.revision);
+        state.selectManual(MODE_FRONT, true, RAW_REVERSE);
+        assertFalse(state.update(true, true, true, RAW_REVERSE));
+        assertFalse(state.update(true, true, false, -1));
+        assertEquals(MODE_FRONT, state.pendingTarget());
+        assertTrue(state.update(true, true, true, RAW_DRIVE));
+        assertFalse(state.manual);
+        assertEquals(MODE_FRONT, state.pendingTarget());
+        assertTrue(state.update(true, true, true, RAW_REVERSE));
+        assertEquals(MODE_REAR, state.pendingTarget());
+    }
+
+    @Test public void manualIntentParsingRejectsUnversionedOriginChange() {
+        NativePanoramaController.IntentState state = new NativePanoramaController.IntentState();
+        assertTrue(state.accept(100, 1, 1, true, MODE_FRONT, true));
+        assertTrue(state.manual);
+        assertThrows(IllegalArgumentException.class,
+                () -> state.accept(100, 1, 1, true, MODE_FRONT, false));
+        assertTrue(state.accept(100, 1, 1, true, -1, true));
+        assertEquals(-1, state.target);
+        assertTrue(state.accept(100, 2, 1, false, -1, false));
+        assertFalse(state.accept(100, 1, 1, true, MODE_FRONT, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> state.accept(100, 3, 1, false, -1, true));
+    }
+
     private SharedPreferences settings(String name) {
         SharedPreferences result = RuntimeEnvironment.getApplication().getSharedPreferences(name, Context.MODE_PRIVATE);
         result.edit().clear().commit();
@@ -91,30 +140,30 @@ public final class ReverseGearSwitchingTest {
 
     @Test public void nativeCommandsCoalesceUntilConnectedAndAcknowledgedCommandsDoNotReplay() {
         NativeDirection state = new NativeDirection();
-        assertFalse(state.update(false, true, RAW_REVERSE));
+        assertFalse(state.update(false, true, true, RAW_REVERSE));
         assertEquals(-1, state.pendingTarget());
-        assertTrue(state.update(true, true, RAW_REVERSE));
+        assertTrue(state.update(true, true, true, RAW_REVERSE));
         long rear = state.revision;
         assertEquals(MODE_REAR, state.pendingTarget());
-        assertTrue(state.update(true, true, RAW_DRIVE));
+        assertTrue(state.update(true, true, true, RAW_DRIVE));
         assertEquals(MODE_FRONT, state.pendingTarget());
         state.acknowledge(rear);
         assertEquals(MODE_FRONT, state.pendingTarget());
         state.acknowledge(state.revision);
-        assertFalse(state.update(true, true, RAW_DRIVE));
+        assertFalse(state.update(true, true, true, RAW_DRIVE));
         assertEquals(-1, state.pendingTarget());
-        assertFalse(state.update(true, false, -1));
-        assertFalse(state.update(true, true, RAW_DRIVE));
+        assertFalse(state.update(true, true, false, -1));
+        assertFalse(state.update(true, true, true, RAW_DRIVE));
         assertEquals(-1, state.pendingTarget());
-        assertTrue(state.update(true, true, RAW_REVERSE));
+        assertTrue(state.update(true, true, true, RAW_REVERSE));
         assertEquals(MODE_REAR, state.pendingTarget());
-        assertTrue(state.update(true, false, -1));
+        assertTrue(state.update(true, true, false, -1));
         assertEquals(-1, state.pendingTarget());
-        assertTrue(state.update(true, true, RAW_REVERSE));
+        assertTrue(state.update(true, true, true, RAW_REVERSE));
         assertEquals(MODE_REAR, state.pendingTarget());
-        assertFalse(state.update(true, true, RAW_NEUTRAL));
+        assertFalse(state.update(true, true, true, RAW_NEUTRAL));
         assertEquals(MODE_REAR, state.pendingTarget());
-        assertTrue(state.update(false, true, RAW_REVERSE));
+        assertTrue(state.update(false, true, true, RAW_REVERSE));
         assertEquals(-1, state.pendingTarget());
     }
 
@@ -161,16 +210,16 @@ public final class ReverseGearSwitchingTest {
 
     @Test public void inactiveAndNewHelperIntentsRejectLateCommands() {
         NativePanoramaController.IntentState state = new NativePanoramaController.IntentState();
-        assertTrue(state.accept(100, 1, 1, true, MODE_REAR));
-        assertTrue(state.accept(100, 2, 1, true, MODE_FRONT));
-        assertFalse(state.accept(100, 1, 1, true, MODE_REAR));
+        assertTrue(state.accept(100, 1, 1, true, MODE_REAR, false));
+        assertTrue(state.accept(100, 2, 1, true, MODE_FRONT, false));
+        assertFalse(state.accept(100, 1, 1, true, MODE_REAR, false));
         assertEquals(MODE_FRONT, state.target);
-        assertTrue(state.accept(100, 3, 1, false, -1));
-        assertFalse(state.accept(100, 2, 1, true, MODE_FRONT));
+        assertTrue(state.accept(100, 3, 1, false, -1, false));
+        assertFalse(state.accept(100, 2, 1, true, MODE_FRONT, false));
         assertFalse(state.active);
-        assertTrue(state.accept(200, 0, 0, false, -1));
-        assertFalse(state.accept(100, 4, 2, true, MODE_REAR));
-        assertThrows(IllegalArgumentException.class, () -> state.accept(200, 1, 1, true, 2));
+        assertTrue(state.accept(200, 0, 0, false, -1, false));
+        assertFalse(state.accept(100, 4, 2, true, MODE_REAR, false));
+        assertThrows(IllegalArgumentException.class, () -> state.accept(200, 1, 1, true, 2, false));
         assertEquals(-1, state.target);
     }
 }

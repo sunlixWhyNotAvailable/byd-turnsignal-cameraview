@@ -47,6 +47,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private boolean rearSteeringShift = true;
     private boolean frontSteeringShift = true;
     private final Runnable steeringExpired = this::applySteering;
+    private long[] armedTiming;
 
     ShellReverseCameraOverlay(Context context, BiConsumer<String, Object[]> eventSink) {
         this(context, CameraDisplayTarget.TABLET, eventSink);
@@ -63,6 +64,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     void prepare(CameraShellProtocol.ReverseOverlaySpec spec) throws Exception {
+        long[] timing = phaseStart();
         // A selector attach failure leaves a process-scoped host quiesced.  Never replace that
         // retained host in this process; the controller must restart the shell first.
         if (root == null && (frontControl != null || rearControl != null)) {
@@ -77,6 +79,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         Point size = new Point();
         display.getRealSize(size);
         spec.validate(size.x, size.y);
+        phase("display_validate", spec.requestId, timing);
         centralFrontSourceEnabled = spec.requiresCentralFrontSource();
         widgetVisible = spec.widgetVisible;
         widgetAvailable = spec.widgetVisible;
@@ -124,6 +127,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             }
         }
         requestId = spec.requestId;
+        phase("reuse_checks", requestId, timing);
         rearSteeringShift = spec.rearSteeringShift;
         frontSteeringShift = spec.frontSteeringShift;
         if (spec.rearDirectionGuidelines || spec.frontDirectionGuidelines)
@@ -151,6 +155,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         applySteering();
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
+        phase("prepare_view", requestId, timing);
         emit("reverse_overlay_prepare", "request_id", requestId,
                 "display_target", displayTarget,
                 "width", size.x, "height", size.y,
@@ -198,6 +203,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     void armFrames(int expectedRequestId, int[] expectedGenerations) {
         requireRequest(expectedRequestId);
+        armedTiming = phaseStart();
         root.armFrames(expectedRequestId, expectedGenerations);
         completedFrameRequestId = 0;
         blockedRevealReported = false;
@@ -425,6 +431,12 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     @Override
     public void onReverseFramesReady(int frameRequestId, int[] generations) {
         if (frameRequestId != requestId || !Arrays.equals(generations, surfaceGenerations)) return;
+        if (armedTiming != null && DiagnosticLogPolicy.extended()
+                && armedTiming[2] == DiagnosticLogPolicy.revision())
+            emit("reverse_phase_detail", "stage", "first_frames_wait", "request_id", requestId,
+                    "display_target", displayTarget,
+                    "wait_us", (android.os.SystemClock.elapsedRealtimeNanos() - armedTiming[0]) / 1000);
+        armedTiming = null;
         completedFrameRequestId = frameRequestId;
         emit("reverse_overlay_first_frames", "request_id", requestId,
                 "display_target", displayTarget,
@@ -533,6 +545,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     private void createWindow(
             Display display, Point size, CameraShellProtocol.ReverseOverlaySpec spec)
             throws Exception {
+        long[] timing = phaseStart();
         Context windowContext = context.createDisplayContext(display);
 
         ReverseCameraCompositionView nextRoot = new ReverseCameraCompositionView(windowContext);
@@ -548,6 +561,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextRoot.applyOverlayConfiguration(spec, centralFrontSourceEnabled);
         nextRoot.setPaneBoundedBuffers(size.x, size.y, spec);
         root = nextRoot;
+        phase("construct_configure_buffers", requestId, timing);
         WindowlessOverlayHost nextHost = new WindowlessOverlayHost(
                 windowContext, display, WindowlessOverlayHost.REVERSE_LAYER,
                 "reverse", -1, eventSink);
@@ -555,17 +569,22 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         nextHost.setDiagnosticState(requestId, Arrays.toString(surfaceGenerations));
         try {
             nextHost.attach(nextRoot, size.x, size.y, 0, 0, WINDOW_TITLE);
+            phase("windowless_attach_layout", requestId, timing);
             configureControls(display, size,
                     spec.widgetVisible && spec.layout.targetFor(
                             ReverseCameraLayout.WIDGET_PANE_ID) == displayTarget);
+            phase("selector_controls", requestId, timing);
         } catch (Throwable error) {
             releaseControlsQuietly();
             windowless = null;
             root = null;
             try {
                 nextHost.quiesce();
-            } catch (Throwable ignored) {}
-            throw new CameraShellProtocol.PrepareRestartRequired("reverse_attach_failed");
+            } catch (Throwable cleanup) { error.addSuppressed(cleanup); }
+            CameraShellProtocol.PrepareRestartRequired restart = new CameraShellProtocol.PrepareRestartRequired(
+                    "reverse_attach_failed", "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
+            restart.initCause(error);
+            throw restart;
         }
         emit("reverse_overlay_window", "state", "added",
                 "request_id", requestId, "display_target", displayTarget,
@@ -573,6 +592,20 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "layer", nextHost.layer(), "alpha", 0.0f,
                 "trusted_api", nextHost.trustedApi(),
                 "transparency_percent", spec.transparencyPercent);
+    }
+
+    private static long[] phaseStart() {
+        return DiagnosticLogPolicy.extended() ? new long[]{android.os.SystemClock.elapsedRealtimeNanos(),
+                android.os.Debug.threadCpuTimeNanos(), DiagnosticLogPolicy.revision()} : null;
+    }
+
+    private void phase(String stage, int request, long[] start) {
+        if (start == null || !DiagnosticLogPolicy.extended() || start[2] != DiagnosticLogPolicy.revision()) return;
+        long now = android.os.SystemClock.elapsedRealtimeNanos(), cpu = android.os.Debug.threadCpuTimeNanos();
+        emit("reverse_phase_detail", "stage", stage, "request_id", request, "display_target", displayTarget,
+                "run_us", (now - start[0]) / 1000, "cpu_us", (cpu - start[1]) / 1000);
+        start[0] = android.os.SystemClock.elapsedRealtimeNanos();
+        start[1] = android.os.Debug.threadCpuTimeNanos();
     }
 
     private void configureControls(Display display, Point size, boolean enabled)

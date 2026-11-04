@@ -348,7 +348,7 @@ public final class CameraShellMain {
                             CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
                     int prepareResult;
                     try {
-                        runOnMain(() -> {
+                        runOnMain("prepare", spec.requestId, -1, () -> {
                             deferredReverseSurfaceReadyRequestId = 0;
                             reversePrepareInProgress = true;
                             preparingReverseRequestId = spec.requestId;
@@ -404,6 +404,7 @@ public final class CameraShellMain {
                     int requestId = data.readInt();
                     boolean forceTabletFallback = data.readInt() != 0;
                     ReverseSurfaceBundle snapshot = runOnMain(
+                            "acquire", requestId, -1,
                             () -> acquireReverseSurfaceBundle(requestId, forceTabletFallback));
                     reply.writeNoException();
                     reply.writeInt(snapshot.requestId);
@@ -432,7 +433,7 @@ public final class CameraShellMain {
                     int requestId = data.readInt();
                     int displayTarget = readReverseDisplayTarget(data);
                     int[] generations = readReverseGenerations(data);
-                    runOnMain(() -> {
+                    runOnMain("arm", requestId, displayTarget, () -> {
                         reverseOverlay(displayTarget).armFrames(requestId, generations);
                         return null;
                     });
@@ -444,7 +445,7 @@ public final class CameraShellMain {
                     int displayTarget = readReverseDisplayTarget(data);
                     int[] generations = readReverseGenerations(data);
                     boolean visible = data.readInt() != 0;
-                    runOnMain(() -> {
+                    runOnMain(visible ? "show" : "hide", requestId, displayTarget, () -> {
                         reverseOverlay(displayTarget).setVisible(
                                 requestId, generations, visible);
                         return null;
@@ -801,6 +802,25 @@ public final class CameraShellMain {
                 if (cause instanceof Error) throw (Error) cause;
                 throw error;
             }
+        }
+
+        private <T> T runOnMain(String stage, int requestId, int target,
+                java.util.concurrent.Callable<T> callable) throws Exception {
+            if (!DiagnosticLogPolicy.extended()) return runOnMain(callable);
+            long revision = DiagnosticLogPolicy.revision();
+            long queued = SystemClock.elapsedRealtimeNanos();
+            return runOnMain(() -> {
+                long started = SystemClock.elapsedRealtimeNanos();
+                long cpu = android.os.Debug.threadCpuTimeNanos();
+                try { return callable.call(); }
+                finally {
+                    if (DiagnosticLogPolicy.extended() && revision == DiagnosticLogPolicy.revision())
+                        emit("reverse_phase_detail", "stage", stage, "request_id", requestId,
+                                "display_target", target, "main_queue_us", (started - queued) / 1000,
+                                "run_us", (SystemClock.elapsedRealtimeNanos() - started) / 1000,
+                                "cpu_us", (android.os.Debug.threadCpuTimeNanos() - cpu) / 1000);
+                }
+            });
         }
 
         private synchronized void registerCallback(IBinder value) throws RemoteException {

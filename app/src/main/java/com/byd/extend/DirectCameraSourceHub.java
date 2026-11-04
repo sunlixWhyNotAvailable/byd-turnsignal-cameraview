@@ -579,6 +579,8 @@ final class DirectCameraSourceHub
         long outputPolicyRevision = DiagnosticLogPolicy.revision();
         long droppedAtReport;
         long outputAgeMaxNs;
+        long outputAgeTotalNs, outputCpuTotalNs, outputCpuMaxNs;
+        int outputSamples;
         SerializedCall<Void> closeCall;
         volatile boolean released;
 
@@ -849,6 +851,7 @@ final class DirectCameraSourceHub
             stats.restart();
             droppedAtReport = pump.mailbox.dropped();
             outputAgeMaxNs = 0;
+            outputAgeTotalNs = outputCpuTotalNs = outputCpuMaxNs = outputSamples = 0;
         }
 
         private boolean refreshAcquisitionStatsPolicy() {
@@ -1112,8 +1115,12 @@ final class DirectCameraSourceHub
                             targetDimensionCount++;
                         }
                         swapCount++;
-                        outputAgeMaxNs = Math.max(outputAgeMaxNs,
-                                Math.max(0, System.nanoTime() - acquiredFrameTimestampNanos));
+                        long age = Math.max(0, System.nanoTime() - acquiredFrameTimestampNanos);
+                        outputAgeMaxNs = Math.max(outputAgeMaxNs, age);
+                        outputAgeTotalNs += age;
+                        outputCpuTotalNs += timing.cpuNs;
+                        outputCpuMaxNs = Math.max(outputCpuMaxNs, timing.cpuNs);
+                        outputSamples++;
                     }
                 } catch (Throwable error) {
                     try { destroyTarget(target); }
@@ -1189,7 +1196,12 @@ final class DirectCameraSourceHub
             report.droppedSnapshots = dropped - droppedAtReport;
             droppedAtReport = dropped;
             report.outputAgeMaxNs = outputAgeMaxNs;
+            report.outputAgeTotalNs = outputAgeTotalNs;
+            report.outputCpuTotalNs = outputCpuTotalNs;
+            report.outputCpuMaxNs = outputCpuMaxNs;
+            report.outputSamples = outputSamples;
             outputAgeMaxNs = 0;
+            outputAgeTotalNs = outputCpuTotalNs = outputCpuMaxNs = outputSamples = 0;
             publishStats(report, window, generation);
         }
 
@@ -1352,6 +1364,7 @@ final class DirectCameraSourceHub
                 }
             }
             DrawTiming timing = target.timing;
+            timing.cpuNs = collectStats ? android.os.Debug.threadCpuTimeNanos() - cpuStartedNs : 0;
             timing.preSwapNs = collectStats ? swapStartedNs - startedNs : 0L;
             timing.swapWaitNs = collectStats ? swapWaitNs : 0L;
             timing.width = target.width;
@@ -1727,6 +1740,8 @@ final class DirectCameraSourceHub
         boolean outputStage;
         long droppedSnapshots;
         long outputAgeMaxNs;
+        long outputAgeTotalNs, outputCpuTotalNs, outputCpuMaxNs;
+        int outputSamples;
         AcquisitionMetrics acquisitionMetrics;
         boolean sourceClosed;
         boolean sourceRetired;
@@ -2166,6 +2181,7 @@ final class DirectCameraSourceHub
     }
 
     private static final class DrawTiming {
+        long cpuNs;
         long preSwapNs;
         long swapWaitNs;
         int width;

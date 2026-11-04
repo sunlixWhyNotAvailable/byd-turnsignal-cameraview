@@ -154,17 +154,30 @@ final class ReverseCameraController {
     }
 
     private void updateNativeDirection(int raw, boolean valid, String source) {
-        if (nativeDirection.update(!shutdown && enabled() && panoVisible
-                && ReverseGearSwitching.nativeView(ReverseGearSwitching.read(settings)), valid, raw))
+        boolean automatic = ReverseGearSwitching.nativeView(ReverseGearSwitching.read(settings));
+        if (nativeDirection.update(!shutdown && runtimeAllowed && enabled() && panoVisible
+                && (automatic || nativeDirection.manual && manualNativeAllowed()), automatic, valid, raw))
             reportNativeDirection(source);
+    }
+
+    private boolean manualNativeAllowed() {
+        return !shutdown && runtimeAllowed && enabled() && panoVisible && !stopping
+                && activeRequestId > 0 && (visible || clusterVisible) && sessionPolicy.eligible
+                && loadWidgetVisible(settings) && hasAnyFrontIntegration(settings);
     }
 
     void reportNativeDirection(String source) {
         emit("reverse_native_direction", "source_epoch", nativeEpoch,
                 "revision", nativeDirection.revision, "session", nativeDirection.session,
                 "active", nativeDirection.active, "target", nativeDirection.pendingTarget(),
+                "manual", nativeDirection.manual,
                 "gear_raw", sessionPolicy.raw, "gear_switch_mode", ReverseGearSwitching.read(settings),
                 "source_event", source);
+    }
+
+    private void cancelManualNative(String source) {
+        if (nativeDirection.manual && nativeDirection.update(false, false, false, -1))
+            reportNativeDirection(source);
     }
 
     void acknowledgeNativeDirection(long epoch, long revision) {
@@ -179,7 +192,7 @@ final class ReverseCameraController {
      */
     void requestSteeringToggle(long ownerEpoch) {
         CameraHelperMain.HelperBinder activeHelper = helper;
-        if (shutdown || stopping || activeRequestId <= 0 || !visible
+        if (shutdown || stopping || activeRequestId <= 0 || !(visible || clusterVisible)
                 || activeHelper == null || !enabled() || !sessionPolicy.eligible
                 || !loadWidgetVisible(settings) || !hasAnyFrontIntegration(settings)) return;
         if (ownerEpoch < 0) return;
@@ -249,6 +262,12 @@ final class ReverseCameraController {
                     if (selected >= 0) direction.accept(selected,
                             event.optBoolean("automatic", false),
                             "blocked".equals(event.optString("state", "")));
+                    // Both the selector tap and bound-button toggle arrive here once.
+                    if (selected >= 0 && !event.optBoolean("automatic", false)
+                            && !"blocked".equals(event.optString("state", "")) && manualNativeAllowed()) {
+                        nativeDirection.selectManual(selected, sessionPolicy.gearValid, sessionPolicy.raw);
+                        reportNativeDirection("manual_selector");
+                    }
                 }
             } else if ("reverse_gear_listener".equals(kind)
                     && !event.optBoolean("listener_ok", false)) {
@@ -607,6 +626,7 @@ final class ReverseCameraController {
     }
 
     private void resetAfterShellDeath(boolean preserveDirection) {
+        cancelManualNative("shell_lost");
         CameraHelperMain.HelperBinder activeHelper = helper;
         if (activeHelper != null) {
             activeHelper.invalidateReverseOverlayShows(activeRequestId, "helper_lost");
@@ -971,6 +991,7 @@ final class ReverseCameraController {
     }
 
     private void stop(String reason, boolean retryAfter, boolean preserveDirection) {
+        cancelManualNative("stop:" + reason);
         if (stopping) return;
         cancelTimers();
         int closingRequestId = activeRequestId;
@@ -1103,6 +1124,7 @@ final class ReverseCameraController {
     }
 
     private void resetRuntime(String reason) {
+        cancelManualNative("reset:" + reason);
         steeringSample = ReverseSteeringSample.UNKNOWN;
         cancelTimers();
         clearCleanupRetry();

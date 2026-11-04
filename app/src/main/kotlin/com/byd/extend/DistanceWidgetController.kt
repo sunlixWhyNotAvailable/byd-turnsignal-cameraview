@@ -35,7 +35,8 @@ class DistanceWidgetController internal constructor(
         override fun onDisplayChanged(id: Int) = displayChanged()
     }
     private data class Host(val displayId: Int, val overlay: WindowlessOverlayHost,
-        val view: DistanceWidgetView, val width: Int, val height: Int, var visible: Boolean = false)
+        val view: DistanceWidgetView, val width: Int, val height: Int,
+        val timing: DiagnosticTimingWindow, var generation: Long = -1, var visible: Boolean = false)
     private val hosts = mutableMapOf<Triple<Int, Int, Int>, Host>()
     private val source = DistanceAdasSource(identity, handler, { next ->
         frame = next
@@ -114,18 +115,30 @@ class DistanceWidgetController internal constructor(
             val hostKey = display?.let { Triple(it.displayId, metrics.widthPixels, metrics.heightPixels) }
             hosts.forEach { (key, host) -> if (host.visible && (!show || key != hostKey)) {
                 host.overlay.setStrictVisible(false, 0f); host.visible = false
+                host.timing.clear()
+                if (DiagnosticLogPolicy.extended()) event.accept("distance_visibility_detail", arrayOf(
+                    "display", host.displayId, "visible", false, "frame_status", frame.status,
+                    "last_view_age_ms", SystemClock.elapsedRealtime() - host.view.sourceReceivedAt))
             } }
             if (!show) return
             if (display == null) throw IllegalStateException("Distance target display unavailable: ${settings.target}")
             val host = hosts.getOrPut(requireNotNull(hostKey)) {
                 val root = FrameLayout(context)
                 val view = DistanceWidgetView(context); root.addView(view)
-                view.drawTiming = { micros -> event.accept("distance_render_detail", arrayOf(
-                    "display", display.displayId, "draw_us", micros, "width", view.width, "height", view.height)) }
+                val timing = DiagnosticTimingWindow("draw_us", "draw_cpu_us", "frame_age_ms")
+                view.drawTiming = { micros, cpu, age ->
+                    timing.record(SystemClock.elapsedRealtime(), micros, cpu, age)?.let { report ->
+                        event.accept("distance_render_metrics", arrayOf<Any>(*report,
+                            "display", display.displayId, "width", view.width, "height", view.height))
+                    }
+                }
                 val overlay = WindowlessOverlayHost(context, display, WindowlessOverlayHost.mirrorLayer()-1,
                     "distance", -1, event)
                 overlay.attach(root, metrics.widthPixels, metrics.heightPixels, 0, 0, "BYD Extend distance", false, true)
-                Host(display.displayId, overlay, view, metrics.widthPixels, metrics.heightPixels)
+                Host(display.displayId, overlay, view, metrics.widthPixels, metrics.heightPixels, timing)
+            }
+            if (host.generation != frame.generation) {
+                host.timing.clear(); host.generation = frame.generation
             }
             val bounds = settings.profile.frame(host.width.toFloat(), host.height.toFloat())
             val layout = host.view.layoutParams as? FrameLayout.LayoutParams
