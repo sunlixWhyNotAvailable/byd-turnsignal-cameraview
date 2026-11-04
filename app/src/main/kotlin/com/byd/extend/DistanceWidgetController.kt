@@ -36,7 +36,8 @@ class DistanceWidgetController internal constructor(
     }
     private data class Host(val displayId: Int, val overlay: WindowlessOverlayHost,
         val view: DistanceWidgetView, val width: Int, val height: Int,
-        val timing: DiagnosticTimingWindow, var generation: Long = -1, var visible: Boolean = false)
+        val timing: DiagnosticTimingWindow, val animationTiming: DiagnosticTimingWindow,
+        var generation: Long = -1, var visible: Boolean = false)
     private val hosts = mutableMapOf<Triple<Int, Int, Int>, Host>()
     private val source = DistanceAdasSource(identity, handler, { next ->
         frame = next
@@ -92,10 +93,7 @@ class DistanceWidgetController internal constructor(
         render()
     }
     private fun publishPreview() {
-        previewSink.accept(Bundle().apply {
-            putLong("generation", frame.generation); putLong("received", frame.receivedAt)
-            putBoolean("valid", frame.valid); putString("status", frame.status); putDoubleArray("distances", frame.distances())
-        })
+        previewSink.accept(DistanceFrameCodec.encode(frame))
     }
     private fun render() {
         val show = !appVisible && !overlayFailure && frame.fresh(SystemClock.elapsedRealtime()) &&
@@ -114,8 +112,9 @@ class DistanceWidgetController internal constructor(
             val metrics = cachedMetrics
             val hostKey = display?.let { Triple(it.displayId, metrics.widthPixels, metrics.heightPixels) }
             hosts.forEach { (key, host) -> if (host.visible && (!show || key != hostKey)) {
+                host.view.stopAnimation()
                 host.overlay.setStrictVisible(false, 0f); host.visible = false
-                host.timing.clear()
+                host.timing.clear(); host.animationTiming.clear()
                 if (DiagnosticLogPolicy.extended()) event.accept("distance_visibility_detail", arrayOf(
                     "display", host.displayId, "visible", false, "frame_status", frame.status,
                     "last_view_age_ms", SystemClock.elapsedRealtime() - host.view.sourceReceivedAt))
@@ -126,6 +125,12 @@ class DistanceWidgetController internal constructor(
                 val root = FrameLayout(context)
                 val view = DistanceWidgetView(context); root.addView(view)
                 val timing = DiagnosticTimingWindow("draw_us", "draw_cpu_us", "frame_age_ms")
+                val animationTiming = DiagnosticTimingWindow("work_us", "cpu_us", "retarget")
+                view.animationTiming = { micros, cpu, retarget ->
+                    animationTiming.record(SystemClock.elapsedRealtime(), micros, cpu, retarget)?.let { report ->
+                        event.accept("distance_animation_metrics", arrayOf<Any>(*report, "display", display.displayId))
+                    }
+                }
                 view.drawTiming = { micros, cpu, age ->
                     timing.record(SystemClock.elapsedRealtime(), micros, cpu, age)?.let { report ->
                         event.accept("distance_render_metrics", arrayOf<Any>(*report,
@@ -135,10 +140,10 @@ class DistanceWidgetController internal constructor(
                 val overlay = WindowlessOverlayHost(context, display, WindowlessOverlayHost.mirrorLayer()-1,
                     "distance", -1, event)
                 overlay.attach(root, metrics.widthPixels, metrics.heightPixels, 0, 0, "BYD Extend distance", false, true)
-                Host(display.displayId, overlay, view, metrics.widthPixels, metrics.heightPixels, timing)
+                Host(display.displayId, overlay, view, metrics.widthPixels, metrics.heightPixels, timing, animationTiming)
             }
             if (host.generation != frame.generation) {
-                host.timing.clear(); host.generation = frame.generation
+                host.timing.clear(); host.animationTiming.clear(); host.generation = frame.generation
             }
             val bounds = settings.profile.frame(host.width.toFloat(), host.height.toFloat())
             val layout = host.view.layoutParams as? FrameLayout.LayoutParams
@@ -153,6 +158,7 @@ class DistanceWidgetController internal constructor(
         } catch (error: Exception) {
             overlayFailure = true; failure("overlay", error)
             hosts.values.forEach { host ->
+                host.view.stopAnimation()
                 try { host.overlay.quiesce(); host.visible = false }
                 catch (cleanup: Exception) { failure("overlay_cleanup", cleanup) }
             }
@@ -167,7 +173,10 @@ class DistanceWidgetController internal constructor(
             stopped = true
             source.setNeeded(false)
             displayManager?.unregisterDisplayListener(displayListener)
-            hosts.values.forEach { try { it.overlay.quiesce(); it.visible = false } catch(error: Exception) { failure("cleanup",error) } }
+            hosts.values.forEach {
+                it.view.stopAnimation()
+                try { it.overlay.quiesce(); it.visible = false } catch(error: Exception) { failure("cleanup",error) }
+            }
         }
     }
 }

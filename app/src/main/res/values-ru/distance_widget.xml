@@ -43,7 +43,7 @@
 <string name="distance_widget_title">Виджет дистанции</string>
 <string name="distance_data_unavailable">Данные дистанции недоступны</string>
 <string name="distance_display_unavailable">Выбранный экран недоступен</string>
-<string name="distance_button_hidden">Виджет скрыт</string>
-<string name="distance_button_restored">Показ виджета восстановлен</string>
-<string name="distance_button_waiting">Показ виджета разрешён. Ожидание условий показа.</string>
+<string name="distance_button_hidden">Виджет дистанции скрыт</string>
+<string name="distance_button_restored">Показ виджета дистанции восстановлен</string>
+<string name="distance_button_waiting">Показ виджета дистанции разрешён. Ожидание условий показа.</string>
 </resources>

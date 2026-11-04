@@ -39,6 +39,7 @@ final class DistanceAdasSource {
     private Class<?> api, callbackClass;
     private Method getTopic, getPayload;
     private AdasObstacleDecoder decoder;
+    private final DistanceObjectContinuity continuity = new DistanceObjectContinuity();
     private ClassLoader loader;
     private volatile boolean needed, failed;
     private boolean started;
@@ -144,13 +145,16 @@ final class DistanceAdasSource {
         String operation="decode_model";
         try {
             List<AdasDistanceModel.Obstacle> objects=decoder.decode(packet.payload);
+            Exception identityError=decoder.takeIdentityError();
+            if(identityError!=null) logError("optional_obstacle_identity",identityError);
             long decoded=measure?SystemClock.elapsedRealtimeNanos():0;
             long decodedCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
-            double[] distances=AdasDistanceModel.distances(objects);
+            AdasDistanceModel.Result measured=AdasDistanceModel.evaluate(objects);
             long modeled=measure?SystemClock.elapsedRealtimeNanos():0;
             long modeledCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
             if(!active(packet.connection) || !packets.current(token)) return;
-            DistanceFrame next=new DistanceFrame(generation,received,true,"ready",distances);
+            DistanceFrame next=new DistanceFrame(generation,received,true,"ready",measured.distances,
+                    continuity.accept(measured.objects));
             if(!next.fresh(SystemClock.elapsedRealtime())) { expired++; invalidate("stale_delivery"); return; }
             boolean recovering=!current.valid;
             current=next; count++;
@@ -182,6 +186,7 @@ final class DistanceAdasSource {
         invalidate(reason);
     }
     private void invalidate(String reason) {
+        continuity.clear();
         timing.clear();
         boolean changed=current.valid || !reason.equals(current.status);
         current=DistanceFrame.unavailable(generation,SystemClock.elapsedRealtime(),reason);

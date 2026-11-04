@@ -42,7 +42,7 @@
 <string name="distance_widget_title">距离小组件</string>
 <string name="distance_data_unavailable">距离数据不可用</string>
 <string name="distance_display_unavailable">所选屏幕不可用</string>
-<string name="distance_button_hidden">小组件已隐藏</string>
-<string name="distance_button_restored">已恢复小组件显示</string>
-<string name="distance_button_waiting">已允许显示小组件，正在等待显示条件。</string>
+<string name="distance_button_hidden">距离小组件已隐藏</string>
+<string name="distance_button_restored">已恢复距离小组件显示</string>
+<string name="distance_button_waiting">已允许显示距离小组件，正在等待显示条件。</string>
 </resources>

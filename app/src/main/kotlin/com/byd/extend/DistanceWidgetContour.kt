@@ -5,13 +5,14 @@ import kotlin.math.*
 data class DistanceReading(val cm: Double, val color: Int)
 data class DistanceContourPoint(val x: Float, val y: Float, val color: Int)
 data class DistanceContour(val points: List<DistanceContourPoint>, val closed: Boolean)
+internal data class DistanceContourSpan(val sectors: List<Int>, val start: Float, val end: Float)
 
 /** Clockwise: front, front-right, right, rear-right, rear, rear-left, left, front-left. */
 object DistanceWidgetContour {
-    fun build(readings: List<DistanceReading?>, maximumCm: Int, backgroundPercent: Int = 100): List<DistanceContour> {
-        require(backgroundPercent in 70..100)
-        require(readings.size == 8 && maximumCm > 0)
-        require(readings.filterNotNull().all { it.cm >= 0 && it.cm <= maximumCm })
+    fun build(readings: List<DistanceReading?>, maximumCm: Int, backgroundPercent: Int = 100): List<DistanceContour> =
+        buildSpans(readings, maximumCm, backgroundPercent, spans(readings))
+
+    internal fun spans(readings: List<DistanceReading?>): List<DistanceContourSpan> {
         if (readings.all { it == null }) return emptyList()
         val closed = readings.all { it != null }
         val groups = mutableListOf<List<Int>>()
@@ -27,9 +28,23 @@ object DistanceWidgetContour {
             if (run.isNotEmpty()) groups += run
         }
         return groups.map { group ->
-            val first = if (closed) 0f else -0.5f
-            val points = (0..group.size * 24).map { step ->
-                val position = first + step / 24f
+            val start = if (closed) 0f else group.first() - .5f
+            DistanceContourSpan(group, start, start + group.size)
+        }
+    }
+
+    internal fun buildSpans(readings: List<DistanceReading?>, maximumCm: Int, backgroundPercent: Int,
+        spans: List<DistanceContourSpan>): List<DistanceContour> {
+        require(backgroundPercent in 70..100)
+        require(readings.size == 8 && maximumCm > 0)
+        require(readings.filterNotNull().all { it.cm >= 0 && it.cm <= maximumCm })
+        if (readings.all { it == null }) return emptyList()
+        return spans.map { span ->
+            val group = span.sectors
+            val closed = group.size == 8
+            val steps = ceil((span.end - span.start) * 24).toInt().coerceAtLeast(1)
+            val points = (0..steps).map { step ->
+                val position = span.start - group.first() + (span.end - span.start) * step / steps
                 val low = floor(position).toInt()
                 val a = readings[group[if (closed) low % group.size else low.coerceIn(group.indices)]]!!
                 val b = readings[group[if (closed) (low + 1) % group.size else (low + 1).coerceIn(group.indices)]]!!

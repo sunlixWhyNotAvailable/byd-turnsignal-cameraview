@@ -11,10 +11,26 @@ class DistanceWidgetView(context: Context) : View(context) {
     private var radius = 0f
     private var pixelScale = 1f
     var drawTiming: ((Long, Long, Long) -> Unit)? = null
+    var animationTiming: ((Long, Long, Long) -> Unit)? = null
     var sourceReceivedAt: Long = 0
         private set
     private var readings: List<DistanceReading?> = List(8) { null }
     private var contours = emptyList<DistanceContour>()
+    private val motion = DistanceContourMotion()
+    private var currentFrame = DistanceFrame.unavailable(0, 0, "inactive")
+    private var cornerInput = 0f
+    private var animationReady = false
+    private var animationPending = false
+    private val animationStep = Runnable {
+        animationPending = false
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!isAttachedToWindow || windowVisibility != VISIBLE || !currentFrame.fresh(now)) {
+            stopAnimation(); invalidate()
+        } else {
+            renderMotion(now, false)
+            scheduleAnimation(now)
+        }
+    }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
@@ -23,6 +39,7 @@ class DistanceWidgetView(context: Context) : View(context) {
     private var art: DistanceCarArt? = null
     private var bitmap: Bitmap? = null
     private val clip = Path()
+    init { animationReady = true }
 
     fun update(value: DistanceWidgetSettings, cornerRadius: Float, frame: DistanceFrame, displayScale: Float = 1f) {
         sourceReceivedAt = frame.receivedAt
@@ -30,8 +47,17 @@ class DistanceWidgetView(context: Context) : View(context) {
         val nextReadings = if (frame.fresh(android.os.SystemClock.elapsedRealtime()))
             frame.distances().map { cm -> value.zoneAt(cm)?.let { DistanceReading(cm, it.color) } }
             else List(8) { null }
-        if (art != null && settings == value && radius == nextRadius && readings == nextReadings && pixelScale == displayScale) return
+        val visualChanged = art == null || settings != value || radius != nextRadius ||
+            readings != nextReadings || pixelScale != displayScale
+        if (art != null && currentFrame === frame && settings == value && radius == nextRadius &&
+            readings == nextReadings && pixelScale == displayScale) return
+        if (settings.zones != value.zones || settings.target != value.target ||
+            settings.profile.backgroundPercent != value.profile.backgroundPercent ||
+            settings.hiddenByButton != value.hiddenByButton || !isAttachedToWindow || windowVisibility != VISIBLE)
+            stopAnimation()
         settings = value
+        currentFrame = frame
+        cornerInput = cornerRadius
         radius = nextRadius
         pixelScale = displayScale
         val car = DistanceCarCatalog.resolve(value.carModel, value.carColor)
@@ -40,12 +66,58 @@ class DistanceWidgetView(context: Context) : View(context) {
             art = car
         }
         readings = nextReadings
-        contours = DistanceWidgetContour.build(readings, value.zones.last().endCm, value.profile.backgroundPercent)
+        val now = android.os.SystemClock.elapsedRealtime()
+        renderMotion(now, true)
         alpha = 1f - value.profile.transparency / 100f
-        invalidate()
+        scheduleAnimation(now)
+        // Geometry, numbers, artwork and colors also change independently of contour interpolation.
+        if (visualChanged) invalidate()
+    }
+
+    private fun renderMotion(now: Long, accept: Boolean) {
+        val timing = animationTiming.takeIf { DiagnosticLogPolicy.extended() }
+        val revision = DiagnosticLogPolicy.revision()
+        val started = if (timing != null) android.os.SystemClock.elapsedRealtimeNanos() else 0
+        val cpu = if (timing != null) android.os.Debug.threadCpuTimeNanos() else 0
+        val retarget = accept && motion.accept(currentFrame, readings, now)
+        val next = motion.contours(now, settings.zones.last().endCm, settings.profile.backgroundPercent)
+        if (next != contours) { contours = next; invalidate() }
+        if (timing != null && DiagnosticLogPolicy.extended() && revision == DiagnosticLogPolicy.revision())
+            timing((android.os.SystemClock.elapsedRealtimeNanos() - started) / 1000,
+                (android.os.Debug.threadCpuTimeNanos() - cpu) / 1000, if (retarget) 1 else 0)
+    }
+
+    private fun scheduleAnimation(now: Long) {
+        if (!animationPending && isAttachedToWindow && windowVisibility == VISIBLE && motion.active(now)) {
+            animationPending = true
+            postDelayed(animationStep, DistanceContourMotion.FRAME_INTERVAL_MS)
+        } else if (!motion.active(now)) {
+            removeCallbacks(animationStep); animationPending = false
+        }
+    }
+
+    fun stopAnimation() {
+        removeCallbacks(animationStep); animationPending = false
+        motion.clear(); readings = List(8) { null }; contours = emptyList()
+    }
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        update(settings, cornerInput, currentFrame, pixelScale)
+        scheduleAnimation(android.os.SystemClock.elapsedRealtime())
+    }
+    override fun onDetachedFromWindow() {
+        stopAnimation()
+        super.onDetachedFromWindow()
+    }
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (!animationReady) return
+        if (visibility != VISIBLE) stopAnimation()
+        else update(settings, cornerInput, currentFrame, pixelScale)
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (!currentFrame.fresh(android.os.SystemClock.elapsedRealtime())) stopAnimation()
         val timing = drawTiming.takeIf { DiagnosticLogPolicy.extended() }
         val started = if (timing != null) android.os.SystemClock.elapsedRealtimeNanos() else 0
         val cpuStarted = if (timing != null) android.os.Debug.threadCpuTimeNanos() else 0

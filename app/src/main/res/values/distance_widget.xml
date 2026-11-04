@@ -43,7 +43,7 @@
 <string name="distance_widget_title">Distance widget</string>
 <string name="distance_data_unavailable">Distance data unavailable</string>
 <string name="distance_display_unavailable">Selected display is unavailable</string>
-<string name="distance_button_hidden">Widget hidden</string>
-<string name="distance_button_restored">Widget display restored</string>
-<string name="distance_button_waiting">Widget display is enabled. Waiting for display conditions.</string>
+<string name="distance_button_hidden">Distance widget hidden</string>
+<string name="distance_button_restored">Distance widget display restored</string>
+<string name="distance_button_waiting">Distance widget display is enabled. Waiting for display conditions.</string>
 </resources>

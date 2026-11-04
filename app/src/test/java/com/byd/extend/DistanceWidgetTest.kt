@@ -14,12 +14,15 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import com.byd.extend.ui.distance.distanceCoordinateText
+import com.byd.extend.ui.distance.distanceCoordinateCommit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest=Config.NONE, sdk=[33])
 class DistanceWidgetTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private val prefs get() = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private fun acceptFrame(bundle: Bundle) = DistanceWidgetUiFeed.accept(bundle) { throw AssertionError(it) }
     @Before fun reset() { prefs.edit().clear().commit(); DistanceWidgetUiFeed.disconnected() }
 
     @Test fun visibilityUsesRawThresholdsAndManualHideSurvivesModeChanges() {
@@ -132,16 +135,16 @@ class DistanceWidgetTest {
             putLong("generation",generation);putLong("received",at);putBoolean("valid",true)
             putDoubleArray("distances",doubleArrayOf(30.0,Double.NaN,Double.NaN,Double.NaN,Double.NaN,Double.NaN,Double.NaN,Double.NaN))
         }
-        DistanceWidgetUiFeed.accept(input(time,1))
+        acceptFrame(input(time,1))
         assertTrue(DistanceWidgetUiFeed.frame.valid)
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
         assertFalse(DistanceWidgetUiFeed.frame.valid)
-        DistanceWidgetUiFeed.accept(input(SystemClock.elapsedRealtime(),2))
-        DistanceWidgetUiFeed.accept(input(time,1))
+        acceptFrame(input(SystemClock.elapsedRealtime(),2))
+        acceptFrame(input(time,1))
         assertEquals(2,DistanceWidgetUiFeed.frame.generation)
         assertTrue(DistanceWidgetUiFeed.frame.valid)
         DistanceWidgetUiFeed.disconnected()
-        DistanceWidgetUiFeed.accept(input(time,1))
+        acceptFrame(input(time,1))
         assertFalse(DistanceWidgetUiFeed.frame.valid)
     }
 
@@ -182,11 +185,54 @@ class DistanceWidgetTest {
             DiagnosticLogPolicy.configure(false)
             assertFalse(DiagnosticLogPolicy.shouldProduce("distance_frame_detail"))
             assertFalse(DiagnosticLogPolicy.shouldProduce("distance_render_detail"))
+            assertFalse(DiagnosticLogPolicy.shouldProduce("distance_animation_metrics"))
             assertTrue(DiagnosticLogPolicy.shouldProduce("distance_source_error"))
             val values=AdasDistanceModel.distances(listOf(AdasDistanceModel.Obstacle(432.75,-.75,10.0,10.0,0.0)))
             assertEquals(30.0,values[0],.0001)
             DiagnosticLogPolicy.configure(true)
             assertTrue(DiagnosticLogPolicy.shouldProduce("distance_frame_detail"))
         } finally { DiagnosticLogPolicy.configure(false) }
+    }
+
+    @Test fun coordinateDisplayAndUneditedBlurPreserveStoredPrecisionInBothProfiles() {
+        val original = DistanceWidgetSettings(tablet=DistanceWidgetProfile(x=12.345678f,y=99.87654f),
+            cluster=DistanceWidgetProfile(x=43.12345f,y=50f))
+        assertEquals("12.3",distanceCoordinateText(original.tablet.x))
+        assertEquals("99.9",distanceCoordinateText(original.tablet.y))
+        assertEquals("50",distanceCoordinateText(original.cluster.y))
+        assertEquals("0",distanceCoordinateText(0f)); assertEquals("100",distanceCoordinateText(100f))
+        val committed=original.copy(tablet=original.tablet.copy(
+            x=distanceCoordinateCommit(original.tablet.x,distanceCoordinateText(original.tablet.x)),
+            y=distanceCoordinateCommit(original.tablet.y,distanceCoordinateText(original.tablet.y))))
+        DistanceWidgetStore.save(context,committed); DistanceWidgetStore.savePreset(prefs)
+        assertEquals(original,DistanceWidgetStore.read(prefs))
+        assertEquals(original,DistanceWidgetSettings.decode(committed.encode()))
+        assertEquals(13.3f,distanceCoordinateCommit(original.tablet.x,"13.3"),0f)
+        assertEquals(12.345f,distanceCoordinateCommit(original.tablet.x,"12.345"),0f)
+    }
+
+    @Test fun objectMetadataRoundTripsAndBadOptionalMetadataKeepsRealDistancesWithCause() {
+        val time=SystemClock.elapsedRealtime()
+        val values=doubleArrayOf(30.0,Double.NaN,Double.NaN,Double.NaN,Double.NaN,Double.NaN,Double.NaN,Double.NaN)
+        val row=DistanceObject(17,2,9,values)
+        val input=DistanceFrame(3,time,true,"ready",values,listOf(row))
+        val restored=DistanceFrameCodec.decode(DistanceFrameCodec.encode(input)) { throw AssertionError(it) }
+        assertArrayEquals(values,restored.distances(),0.0)
+        assertEquals(17,restored.objects.single().id); assertEquals(2,restored.objects.single().type)
+        assertEquals(9,restored.objects.single().continuity)
+        restored.objects.single().distances()[0]=120.0
+        assertEquals(30.0,restored.objects.single().distance(0),0.0)
+        val bad=DistanceFrameCodec.encode(input).apply {
+            putParcelableArrayList("objects", arrayListOf(Bundle().apply {putDoubleArray("distances",doubleArrayOf(1.0))}))
+        }
+        val errors=mutableListOf<Exception>()
+        val compatible=DistanceFrameCodec.decode(bad) { errors.add(it) }
+        assertTrue(compatible.objects.isEmpty()); assertArrayEquals(values,compatible.distances(),0.0)
+        assertTrue(errors.single() is IllegalArgumentException)
+        assertTrue(errors.single().message!!.contains("Eight distance sectors"))
+        acceptFrame(DistanceFrameCodec.encode(input))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
+        assertFalse(DistanceWidgetUiFeed.frame.valid)
+        assertTrue(DistanceWidgetUiFeed.frame.objects.isEmpty())
     }
 }

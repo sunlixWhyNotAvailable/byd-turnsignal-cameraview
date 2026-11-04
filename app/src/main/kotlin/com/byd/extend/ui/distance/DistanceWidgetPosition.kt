@@ -80,9 +80,11 @@ internal fun DistancePositionDialog(settings: DistanceWidgetSettings, radius: Fl
             DistanceDisplayPreview(settings.withProfile(draft),radius,DistanceWidgetUiFeed.frame,palette,strings,
                 Modifier.fillMaxWidth().weight(1f),onMove={ draft=it })
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(20.dp)) {
-                Column(Modifier.weight(1f)) { DistanceNumericSetting("X",draft.x.toString(),{draft=draft.copy(x=it.toFloat())},
+                Column(Modifier.weight(1f)) { DistanceNumericSetting("X",distanceCoordinateText(draft.x),
+                    {draft=draft.copy(x=distanceCoordinateCommit(draft.x,it))},
                     "%",palette,0f..100f,adjustable=true,labelWidth=24.dp) }
-                Column(Modifier.weight(1f)) { DistanceNumericSetting("Y",draft.y.toString(),{draft=draft.copy(y=it.toFloat())},
+                Column(Modifier.weight(1f)) { DistanceNumericSetting("Y",distanceCoordinateText(draft.y),
+                    {draft=draft.copy(y=distanceCoordinateCommit(draft.y,it))},
                     "%",palette,0f..100f,adjustable=true,labelWidth=24.dp) }
             }
             Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -93,3 +95,10 @@ internal fun DistancePositionDialog(settings: DistanceWidgetSettings, radius: Fl
         }
     }
 }
+
+internal fun distanceCoordinateText(value: Float): String =
+    java.lang.String.format(java.util.Locale.US, "%.1f", value.coerceIn(0f,100f)).trimEnd('0').trimEnd('.')
+
+// NumericSetting commits on blur too: displaying rounded text must not move an untouched widget.
+internal fun distanceCoordinateCommit(current: Float, text: String): Float =
+    if (text == distanceCoordinateText(current)) current else text.toFloat().coerceIn(0f,100f)

@@ -17,11 +17,8 @@ object DistanceWidgetUiFeed {
     }
     var frame by mutableStateOf(DistanceFrame.unavailable(0,0,"inactive"))
         private set
-    @JvmStatic fun accept(bundle: Bundle) {
-        val distances = bundle.getDoubleArray("distances") ?: return
-        if (distances.size != 8) return
-        val next = DistanceFrame(bundle.getLong("generation"),bundle.getLong("received"),
-            bundle.getBoolean("valid"),bundle.getString("status", "unavailable"),distances)
+    @JvmStatic fun accept(bundle: Bundle, metadataError: java.util.function.Consumer<Exception>) {
+        val next = DistanceFrameCodec.decode(bundle, metadataError)
         if (next.receivedAt < frame.receivedAt ||
             next.receivedAt == frame.receivedAt && next.generation < frame.generation) return
         frame = if (next.valid && !next.fresh(SystemClock.elapsedRealtime()))

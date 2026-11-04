@@ -14,11 +14,16 @@ public final class AdasDistanceModel {
     private static final double[][] EMPTY = new double[0][];
 
     public static final class Obstacle {
+        public final Integer id, type;
         public final double x, y, length, width, heading;
         public Obstacle(double x, double y, double length, double width, double heading) {
+            this(null, null, x, y, length, width, heading);
+        }
+        public Obstacle(Integer id, Integer type, double x, double y, double length, double width, double heading) {
             if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(length)
                     || !Double.isFinite(width) || !Double.isFinite(heading) || length <= 0 || width <= 0)
                 throw new IllegalArgumentException("Invalid ADAS oriented bounding box");
+            this.id = id; this.type = type;
             this.x = x; this.y = y; this.length = length; this.width = width; this.heading = heading;
         }
         double[][] corners() {
@@ -30,8 +35,21 @@ public final class AdasDistanceModel {
     }
 
     public static double[] distances(List<Obstacle> objects) {
+        return evaluate(objects).distances;
+    }
+
+    public static final class Result {
+        public final double[] distances;
+        public final List<DistanceObject> objects;
+        Result(double[] distances, List<DistanceObject> objects) {
+            this.distances = distances; this.objects = java.util.Collections.unmodifiableList(objects);
+        }
+    }
+
+    public static Result evaluate(List<Obstacle> objects) {
         double[] result = new double[DIRECTIONS];
         Arrays.fill(result, Double.NaN);
+        List<DistanceObject> measured = new ArrayList<>(objects.size());
         for (Obstacle object : objects) {
             double[][] box = object.corners();
             double[] distance = new double[DIRECTIONS];
@@ -61,10 +79,14 @@ public final class AdasDistanceModel {
                     distance[i] = Math.min(distance[i], clearance(covered, new double[]{x,y,x,y}));
                 }
             }
-            for (int i = 0; i < DIRECTIONS; i++) if (Double.isFinite(distance[i]))
-                result[i] = Double.isNaN(result[i]) ? distance[i] : Math.min(result[i], distance[i]);
+            for (int i = 0; i < DIRECTIONS; i++) {
+                if (Double.isFinite(distance[i]))
+                    result[i] = Double.isNaN(result[i]) ? distance[i] : Math.min(result[i], distance[i]);
+                else distance[i] = Double.NaN;
+            }
+            measured.add(new DistanceObject(object.id, object.type, 0, distance));
         }
-        return result;
+        return new Result(result, measured);
     }
 
     private static double[][] clip(double[][] polygon, int axis, double edge, boolean greater) {

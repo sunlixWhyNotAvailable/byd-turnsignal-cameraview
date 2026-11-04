@@ -23,6 +23,8 @@ android {
         compose = true
     }
 
+    testOptions.unitTests.isIncludeAndroidResources = true
+
     packaging {
         // The shell worker loads our JNI library by the installed package's nativeLibraryDir.
         jniLibs.useLegacyPackaging = true

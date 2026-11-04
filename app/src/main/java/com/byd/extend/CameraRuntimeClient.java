@@ -31,7 +31,21 @@ final class CameraRuntimeClient {
     private volatile boolean distancePreview;
     private volatile boolean detached;
     private final LatestValueDispatcher<Bundle> distanceFrames = new LatestValueDispatcher<>(
-            mainHandler::post, (frame, token) -> { if (!detached) DistanceWidgetUiFeed.accept(frame); });
+            mainHandler::post, (frame, token) -> { if (!detached) acceptDistanceFrame(frame); });
+    private String lastDistanceMetadataError = "";
+
+    private void acceptDistanceFrame(Bundle frame) {
+        try {
+            DistanceWidgetUiFeed.accept(frame, error -> {
+                String detail = com.byd.extend.remote.CameraViewingDiagnostics.describe(error);
+                if (detail.equals(lastDistanceMetadataError)) return;
+                lastDistanceMetadataError = detail;
+                try { deliverEvent(new JSONObject().put("kind", "distance_metadata_error")
+                        .put("operation", "decode_optional_objects").put("error", detail).toString()); }
+                catch (org.json.JSONException ignored) { /* fixed String fields */ }
+            });
+        } catch (Exception error) { failure("distance_frame_decode_error", error); }
+    }
     // Android registrations/bindService need a real AMS-owned process. Video stays in the helper.
     private ClusterFullscreenController cluster;
     private final NativePanoramaController nativePanorama;
