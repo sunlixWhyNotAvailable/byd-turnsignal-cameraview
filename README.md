@@ -667,7 +667,15 @@ Copy this number and use your bank's card-to-card transfer feature. You do not n
 
 </details>
 
-The same details are available under `Support` beside the app title. Donations are optional; the app never makes a payment automatically.
+**PayPal:**
+
+```text
+opriva1@gmail.com
+```
+
+In PayPal, choose Send, paste this email as the recipient and enter the amount.
+
+The same details are available under `Project and support` beside the app title. Donations are optional; the app never makes a payment automatically.
 
 ## License
 

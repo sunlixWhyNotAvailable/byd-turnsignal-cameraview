@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 <string name="support_close">"关闭"</string>
-    <string name="support">"支持"</string>
-    <string name="support_title">"支持开发"</string>
-    <string name="support_description">"自愿支持比亚迪汽车应用的开发与改进"</string>
+    <string name="support">"项目与支持"</string>
+    <string name="support_title">"项目与支持"</string>
+    <string name="support_description">"BYD Extend 是免费开源项目。您可以自愿支持其开发与改进。"</string>
     <string name="support_card_label">"筹款罐银行卡号"</string>
     <string name="support_qr_description">"扫描二维码通过 monobank 支持开发"</string>
     <string name="support_scan_hint">"请使用手机扫描二维码，或打开筹款罐链接。"</string>
@@ -15,4 +15,10 @@
     <string name="support_tap_to_copy">"点击复制"</string>
     <string name="support_action_unavailable">"没有可执行此操作的应用"</string>
     <string name="support_share">"分享"</string>
+    <string name="support_paypal_email_label">"PayPal 转账邮箱"</string>
+    <string name="support_repository">"GitHub 源代码"</string>
+    <string name="support_copy_repository">"复制仓库链接"</string>
+    <string name="support_paypal_hint">"在 PayPal 中选择“发送”，粘贴此邮箱作为收款人，然后输入转账金额。"</string>
+    <string name="support_copy_email">"复制邮箱"</string>
+    <string name="support_email_copied">"邮箱已复制"</string>
 </resources>

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 <string name="support_close">"Закрити"</string>
-    <string name="support">"Підтримати"</string>
-    <string name="support_title">"Підтримати розробку"</string>
-    <string name="support_description">"Добровільна підтримка розробки та вдосконалення застосунків для автомобілів BYD"</string>
+    <string name="support">"Проєкт і підтримка"</string>
+    <string name="support_title">"Проєкт і підтримка"</string>
+    <string name="support_description">"BYD Extend — безкоштовний проєкт із відкритим вихідним кодом. Ви можете добровільно підтримати його розробку та вдосконалення."</string>
     <string name="support_card_label">"Номер картки Банки"</string>
     <string name="support_qr_description">"QR-код Банки для поповнення"</string>
     <string name="support_scan_hint">"Відскануйте QR-код телефоном або відкрийте посилання на Банку."</string>
@@ -15,4 +15,10 @@
     <string name="support_tap_to_copy">"Натисніть, щоб скопіювати"</string>
     <string name="support_action_unavailable">"Немає застосунку для цієї дії"</string>
     <string name="support_share">"Поділитися"</string>
+    <string name="support_paypal_email_label">"Email для переказу через PayPal"</string>
+    <string name="support_repository">"Вихідний код на GitHub"</string>
+    <string name="support_copy_repository">"Копіювати посилання на репозиторій"</string>
+    <string name="support_paypal_hint">"У PayPal виберіть «Надіслати», вставте цю адресу як одержувача та вкажіть суму переказу."</string>
+    <string name="support_copy_email">"Копіювати email"</string>
+    <string name="support_email_copied">"Email скопійовано"</string>
 </resources>

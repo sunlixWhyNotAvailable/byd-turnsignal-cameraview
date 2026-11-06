@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 <string name="support_close">"Close"</string>
-    <string name="support">"Support"</string>
-    <string name="support_title">"Support development"</string>
-    <string name="support_description">"Voluntary support for the development and improvement of apps for BYD cars"</string>
+    <string name="support">"Project and support"</string>
+    <string name="support_title">"Project and support"</string>
+    <string name="support_description">"BYD Extend is a free, open-source project. You can voluntarily support its development and improvement."</string>
     <string name="support_card_label">"Jar card number"</string>
     <string name="support_qr_description">"Scan to support via monobank"</string>
     <string name="support_scan_hint">"Scan the QR code with your phone or open the Jar link."</string>
@@ -15,4 +15,10 @@
     <string name="support_tap_to_copy">"Tap to copy"</string>
     <string name="support_action_unavailable">"No app can handle this action"</string>
     <string name="support_share">"Share"</string>
+    <string name="support_paypal_email_label">"Email for PayPal transfers"</string>
+    <string name="support_repository">"Source code on GitHub"</string>
+    <string name="support_copy_repository">"Copy repository link"</string>
+    <string name="support_paypal_hint">"In PayPal, choose Send, paste this email as the recipient and enter the amount."</string>
+    <string name="support_copy_email">"Copy email"</string>
+    <string name="support_email_copied">"Email copied"</string>
 </resources>
