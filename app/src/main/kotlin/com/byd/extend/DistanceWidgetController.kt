@@ -12,7 +12,7 @@ import kotlin.math.roundToInt
 /** Owned by the existing shell helper; Activity death only ends the live preview. */
 class DistanceWidgetController internal constructor(
     private val context: CameraRuntimeContext,
-    identity: Context,
+    private val identity: Context,
     private val handler: Handler,
     private val event: BiConsumer<String, Array<Any>>,
     private val previewSink: Consumer<Bundle>,
@@ -24,6 +24,14 @@ class DistanceWidgetController internal constructor(
     private var preview = false
     private var overlayFailure = false
     private var stopped = false
+    private var needed = false
+    private val sources = DistanceSources()
+    private var radarThread: android.os.HandlerThread? = null
+    private var radar: ParkingRadarRuntime? = null
+    private var radarPackets: LatestValueDispatcher<ParkingRadarState.Snapshot>? = null
+    private var radarEpoch = 0L
+    private var lastDiagnostic = ""
+    private var diagnosticRevision = -1L
     private var displayManager: android.hardware.display.DisplayManager? = null
     private var displayCached = false
     private var cachedTarget: DistanceTarget? = null
@@ -40,9 +48,7 @@ class DistanceWidgetController internal constructor(
         var generation: Long = -1, var visible: Boolean = false)
     private val hosts = mutableMapOf<Triple<Int, Int, Int>, Host>()
     private val source = DistanceAdasSource(identity, handler, { next ->
-        frame = next
-        if (appVisible && preview) publishPreview()
-        render()
+        if (needed && !stopped) { sources.adas(next); publishFrame() }
     }, event)
 
     private fun dispatch(action: () -> Unit) {
@@ -80,6 +86,7 @@ class DistanceWidgetController internal constructor(
         preview = value && appVisible
         reconcile(); publishPreview()
     }
+    fun loggingChanged() = dispatch { if (needed) publishFrame() }
     fun toggle() = dispatch {
         if (!settings.enabled) return@dispatch
         context.settings.edit().putBoolean(DistanceWidgetStore.HIDDEN, !settings.hiddenByButton).apply()
@@ -89,13 +96,48 @@ class DistanceWidgetController internal constructor(
             "waiting", hosts.values.none { it.visible }))
     }
     private fun reconcile() {
-        source.setNeeded(powerOn && (settings.enabled || preview))
+        val next = powerOn && (settings.enabled || preview)
+        if (needed != next) {
+            needed = next
+            val epoch = ++radarEpoch
+            radarPackets?.clear()
+            if (next) {
+                val thread = radarThread ?: android.os.HandlerThread("distance-radar").also { it.start(); radarThread = it }
+                val packets = LatestValueDispatcher<ParkingRadarState.Snapshot>(handler::post) { snapshot, _ ->
+                    if (!stopped && needed && radarEpoch == epoch) { sources.radar(snapshot); publishFrame() }
+                }
+                radarPackets = packets
+                radar = ParkingRadarRuntime(identity, Handler(thread.looper), event, packets::offer).also { it.start() }
+            } else {
+                radar?.stop(); radar = null; radarPackets = null
+                sources.clear()
+            }
+        }
+        source.setNeeded(next)
+        publishFrame()
+    }
+    private fun publishFrame() {
+        val now = SystemClock.elapsedRealtime()
+        frame = if (needed) sources.frame(now) else DistanceFrame.unavailable(frame.generation, now, "inactive")
+        if (DiagnosticLogPolicy.extended()) {
+            val snapshot = sources.radar()
+            val signature = listOf(frame.distances().contentToString(), frame.radarMask, frame.status,
+                sources.adas().distances().contentToString(), sources.adas().status, snapshot.raw().contentToString(),
+                snapshot.present().contentToString(), snapshot.status(0), snapshot.status(1),
+                frame.generation, snapshot.generation(0), snapshot.generation(1)).joinToString("|")
+            if (signature != lastDiagnostic || diagnosticRevision != DiagnosticLogPolicy.revision()) {
+                event.accept("distance_sources_detail", sources.diagnostic(frame))
+                lastDiagnostic = signature; diagnosticRevision = DiagnosticLogPolicy.revision()
+            }
+        }
+        if (appVisible && preview) publishPreview()
         render()
     }
     private fun publishPreview() {
         previewSink.accept(DistanceFrameCodec.encode(frame))
     }
     private fun render() {
+        frame = frame.at(SystemClock.elapsedRealtime())
         val show = !appVisible && !overlayFailure && frame.fresh(SystemClock.elapsedRealtime()) &&
             settings.visible(powerOn, true, frame.distances().map { it.takeIf(Double::isFinite) })
         try {
@@ -171,6 +213,9 @@ class DistanceWidgetController internal constructor(
         source.control {
             if (stopped) return@control
             stopped = true
+            needed = false; ++radarEpoch; radarPackets?.clear()
+            radar?.stop(); radar = null; sources.clear()
+            radarThread?.quitSafely(); radarThread = null
             source.setNeeded(false)
             displayManager?.unregisterDisplayListener(displayListener)
             hosts.values.forEach {

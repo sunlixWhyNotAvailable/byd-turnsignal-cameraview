@@ -41,7 +41,7 @@ final class CameraRuntimeClient {
                 if (detail.equals(lastDistanceMetadataError)) return;
                 lastDistanceMetadataError = detail;
                 try { deliverEvent(new JSONObject().put("kind", "distance_metadata_error")
-                        .put("operation", "decode_optional_objects").put("error", detail).toString()); }
+                        .put("operation", "decode_optional_distance_metadata").put("error", detail).toString()); }
                 catch (org.json.JSONException ignored) { /* fixed String fields */ }
             });
         } catch (Exception error) { failure("distance_frame_decode_error", error); }

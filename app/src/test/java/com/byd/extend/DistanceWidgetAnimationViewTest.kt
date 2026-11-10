@@ -73,4 +73,29 @@ class DistanceWidgetAnimationViewTest {
             else System.setProperty("robolectric.areWindowsMarkedVisible",previousVisibility)
         }
     }
+
+    @Test fun fusedFrameKeepsOriginalAdasAgeAndStaticRadarSchedulesNoAnimation() {
+        val previous=System.setProperty("robolectric.areWindowsMarkedVisible","true")
+        val activity=Robolectric.buildActivity(Activity::class.java).setup()
+        try {
+            DiagnosticLogPolicy.configure(true)
+            val view=DistanceWidgetView(activity.get())
+            activity.get().setContentView(view); activity.visible(); shadowOf(Looper.getMainLooper()).idle()
+            val time=SystemClock.elapsedRealtime()
+            val radar=ParkingRadarState().apply { begin(0,1); registered(0,1); callback(0x99000062.toInt(),65,time,1) }
+            val sources=DistanceSources().apply { adas(frame(81.0)); radar(radar.snapshot()) }
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            view.update(DistanceWidgetSettings(),0f,sources.frame(SystemClock.elapsedRealtime()))
+            assertEquals(time,view.sourceReceivedAt)
+            sources.adas(DistanceFrame.unavailable(1,SystemClock.elapsedRealtime(),"stale"))
+            view.update(DistanceWidgetSettings(),0f,sources.frame(SystemClock.elapsedRealtime()))
+            var steps=0; view.animationTiming={_,_,_->steps++}
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+            assertEquals(0,steps)
+        } finally {
+            DiagnosticLogPolicy.configure(false); activity.pause().stop().destroy()
+            if(previous==null) System.clearProperty("robolectric.areWindowsMarkedVisible")
+            else System.setProperty("robolectric.areWindowsMarkedVisible",previous)
+        }
+    }
 }

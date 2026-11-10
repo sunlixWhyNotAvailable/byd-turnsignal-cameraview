@@ -154,4 +154,50 @@ class DistanceContourMotionTest {
         continuity.clear()
         assertNotEquals(next.continuity,continuity.accept(listOf(objectValue(1,0 to 100.0))).single().continuity)
     }
+
+    @Test fun radarSnapsEvenWhenItsValueMatchesAnAdasObjectAndFallbackDoesNotMorph() {
+        val motion = DistanceContourMotion()
+        val radar = ParkingRadarState().apply { begin(0,1); registered(0,1) }
+        val sources = DistanceSources()
+        sources.adas(frame(1000, objectValue(1,0 to 30.0,4 to 30.0)))
+        feed(motion,sources.frame(1000))
+        radar.callback(0x99000062.toInt(),100,1100,1); sources.radar(radar.snapshot())
+        sources.adas(frame(1100,objectValue(1,0 to 100.0,4 to 100.0)))
+        feed(motion,sources.frame(1100))
+        assertEquals(100.0,motion.readingsAt(1100)[0]!!.cm,0.0)
+        assertEquals(65.0,motion.readingsAt(1150)[4]!!.cm,.001)
+        radar.callback(0x99000062.toInt(),150,1150,1); sources.radar(radar.snapshot())
+        sources.adas(frame(1150,objectValue(1,0 to 140.0,4 to 100.0)))
+        feed(motion,sources.frame(1150))
+        assertEquals(140.0,motion.readingsAt(1150)[0]!!.cm,0.0)
+        radar.callback(0x99000062.toInt(),65,1200,1); sources.radar(radar.snapshot())
+        feed(motion,sources.frame(1200))
+        assertEquals(65.0,motion.readingsAt(1200)[0]!!.cm,0.0)
+        assertEquals(65.0,motion.readingsAt(2000)[0]!!.cm,0.0)
+        assertNull(motion.readingsAt(2000)[4])
+        assertEquals(1,motion.spansAt(2000).size)
+        assertFalse(motion.active(2000))
+    }
+
+    @Test fun authoritativeSideMeasurementAboveDisplayThresholdDoesNotShowAdasBand() {
+        val radar = ParkingRadarState().apply { begin(1,1); registered(1,1); callback(0x36500008,200,1000,1) }
+        val sources = DistanceSources().apply { adas(frame(1000,objectValue(1,6 to 30.0))); radar(radar.snapshot()) }
+        val motion = DistanceContourMotion()
+        feed(motion,sources.frame(1000))
+        assertNull(motion.readingsAt(1000)[6])
+        assertTrue(motion.contours(1000,150,100).isEmpty())
+    }
+
+    @Test fun persistentRadarDoesNotPreserveAnExpiredAdasAnimationTrack() {
+        val radar=ParkingRadarState().apply { begin(1,1); registered(1,1); callback(0x36500008,50,1000,1) }
+        val sources=DistanceSources().apply { radar(radar.snapshot()) }
+        val motion=DistanceContourMotion()
+        sources.adas(frame(1000,objectValue(1,0 to 30.0)))
+        feed(motion,sources.frame(1000))
+        // Latest-value delivery can skip the intermediate stale notification.
+        sources.adas(frame(1600,objectValue(1,0 to 100.0)))
+        assertFalse(feed(motion,sources.frame(1600)))
+        assertEquals(100.0,motion.readingsAt(1600)[0]!!.cm,0.0)
+        assertEquals(50.0,motion.readingsAt(1600)[6]!!.cm,0.0)
+    }
 }

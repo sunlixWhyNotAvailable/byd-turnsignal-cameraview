@@ -119,7 +119,6 @@ public final class TurnSignalShellMain {
         private final ReverseGearRuntime reverseGearRuntime;
         private final ReverseSteeringRuntime reverseSteeringRuntime;
         private final MusicVisualizerRuntime musicRuntime;
-        private final ParkingRadarRuntime parkingRadarRuntime;
         private final RescueButtonTelemetry rescueButtons;
         private final AvasRuntime avasRuntime;
         private final String avasInitializationError;
@@ -184,7 +183,6 @@ public final class TurnSignalShellMain {
             reverseGearRuntime = new ReverseGearRuntime(context, handler, this::emit);
             reverseSteeringRuntime = new ReverseSteeringRuntime(context, handler, this::emit);
             musicRuntime = new MusicVisualizerRuntime(context, handler, this::emit);
-            parkingRadarRuntime = new ParkingRadarRuntime(context, handler, this::emit);
             rescueButtons = new RescueButtonTelemetry(context, handler, this::emit);
             AvasRuntime createdAvas = null;
             String avasError = "";
@@ -204,7 +202,6 @@ public final class TurnSignalShellMain {
             reverseGearRuntime.start();
             reverseSteeringRuntime.start();
             handler.post(() -> powerStateChanged("helper_start"));
-            parkingRadarRuntime.start();
             if (avasRuntime != null) {
                 try {
                     avasRuntime.start();
@@ -225,7 +222,6 @@ public final class TurnSignalShellMain {
             recoveryWorker.shutdownNow();
             clearCallback();
             musicRuntime.stop();
-            parkingRadarRuntime.stop();
             reverseGearRuntime.stop();
             reverseSteeringRuntime.stop();
             warningRuntime.stop();
@@ -420,8 +416,8 @@ public final class TurnSignalShellMain {
                     return true;
                 }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR) {
-                    boolean configured = data.readInt() != 0;
-                    parkingRadarRuntime.configure(configured);
+                    // Retired parking-camera setting; Distance owns its read-only subscription.
+                    data.readInt();
                     reply.writeNoException();
                     return true;
                 }
@@ -569,7 +565,6 @@ public final class TurnSignalShellMain {
                     reverseGearRuntime.reportStatus();
                     reverseSteeringRuntime.reportStatus();
                     musicRuntime.reportStatus();
-                    parkingRadarRuntime.reportStatus();
                     if (avasRuntime != null) avasRuntime.reportStatus();
                     emitPowerState("status_report", false);
                     reply.writeNoException();
@@ -590,7 +585,6 @@ public final class TurnSignalShellMain {
                         if (cameras != null) cameras.shutdown();
                         cameraRuntime = null;
                         musicRuntime.stop();
-                        parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
                         reverseSteeringRuntime.stop();
                         warningRuntime.stop();
@@ -620,7 +614,6 @@ public final class TurnSignalShellMain {
                         }
                         // This helper will be reattached: keep the metadata executor and power state.
                         musicRuntime.configure(false);
-                        parkingRadarRuntime.stop();
                         reverseGearRuntime.stop();
                         reverseSteeringRuntime.stop();
                         warningRuntime.stop();
@@ -768,7 +761,6 @@ public final class TurnSignalShellMain {
                     warningRuntime.start();
                     reverseGearRuntime.start();
                     reverseSteeringRuntime.start();
-                    parkingRadarRuntime.start();
                 }
                 awaitingControllerAttach = false;
                 handler.removeCallbacks(recoveryRunnable);

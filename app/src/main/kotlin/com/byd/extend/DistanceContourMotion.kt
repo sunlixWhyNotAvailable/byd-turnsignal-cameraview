@@ -10,7 +10,7 @@ internal class DistanceContourMotion {
     }
     private data class Key(val id: Int, val type: Int, val continuity: Long)
     private var generation = Long.MIN_VALUE
-    private var received = Long.MIN_VALUE
+    private var sourceFrame = DistanceFrame.unavailable(0, 0, "inactive")
     private var started = 0L
     private var moving = false
     private var owners = arrayOfNulls<Key>(8)
@@ -21,18 +21,20 @@ internal class DistanceContourMotion {
     private var fromSpans = emptyList<DistanceContourSpan>()
 
     fun clear() {
-        generation = Long.MIN_VALUE; received = Long.MIN_VALUE; moving = false
+        generation = Long.MIN_VALUE; sourceFrame = DistanceFrame.unavailable(0, 0, "inactive"); moving = false
         owners.fill(null); keys = emptySet(); raw = List(8) { null }
         targetSpans = emptyList(); fromSpans = emptyList()
     }
 
     fun accept(frame: DistanceFrame, readings: List<DistanceReading?>, now: Long): Boolean {
         if (!frame.fresh(now)) { clear(); return false }
-        if (generation != frame.generation || !fresh(now)) clear()
+        if (generation != frame.generation || !fresh(now) ||
+            sourceFrame.adasValid && !sourceFrame.adasFresh(now)) clear()
         val unique = frame.objects.filter { it.id != null && it.continuity > 0 }
             .groupBy { it.id }.filterValues { it.size == 1 }.mapValues { it.value.single() }
         val nextKeys = unique.values.map { Key(it.id!!, it.type!!, it.continuity) }.toSet()
         val nextOwners = Array<Key?>(8) { sector ->
+            if (frame.radarSector(sector)) return@Array null
             val value = readings[sector]?.cm ?: return@Array null
             val nearest = frame.objects.filter { it.distance(sector) == value }
             val objectValue = nearest.singleOrNull() ?: return@Array null
@@ -41,7 +43,7 @@ internal class DistanceContourMotion {
         }
         // Settings recomposition or repeated unchanged telemetry must not restart a transition.
         if (generation == frame.generation && raw == readings && owners.contentEquals(nextOwners)) {
-            received = frame.receivedAt; keys = nextKeys
+            sourceFrame = frame; keys = nextKeys
             return false
         }
         val previousReadings = readingsAt(now)
@@ -83,25 +85,29 @@ internal class DistanceContourMotion {
             span.copy(start = start, end = end)
         }
         raw = readings; owners = nextOwners; keys = nextKeys
-        targetSpans = nextSpans; generation = frame.generation; received = frame.receivedAt; started = now
+        targetSpans = nextSpans; generation = frame.generation; sourceFrame = frame; started = now
         moving = fromSpans != targetSpans || raw.indices.any { raw[it]?.cm?.let { cm -> cm != from[it] } == true }
         return moving
     }
 
-    private fun fresh(now: Long) = received != Long.MIN_VALUE && now >= received && now - received < DistanceFrame.STALE_MS
+    private fun fresh(now: Long) = sourceFrame.fresh(now)
     private fun fraction(now: Long): Float {
         val t = ((now - started).toFloat() / DURATION_MS).coerceIn(0f, 1f)
         return t * t * (3 - 2 * t)
     }
-    fun active(now: Long) = moving && fresh(now) && now - started < DURATION_MS
+    fun active(now: Long) = moving && fresh(now) &&
+        (!sourceFrame.adasValid || sourceFrame.adasFresh(now)) && now - started < DURATION_MS
     internal fun readingsAt(now: Long): List<DistanceReading?> {
         if (!fresh(now)) return List(8) { null }
+        if (sourceFrame.adasValid && !sourceFrame.adasFresh(now))
+            return raw.mapIndexed { sector, reading -> if (sourceFrame.radarSector(sector)) reading else null }
         if (!active(now)) return raw
         val t = fraction(now)
         return raw.mapIndexed { index, reading -> reading?.copy(cm = min(reading.cm, from[index] + (reading.cm - from[index]) * t)) }
     }
     internal fun spansAt(now: Long): List<DistanceContourSpan> {
         if (!fresh(now)) return emptyList()
+        if (sourceFrame.adasValid && !sourceFrame.adasFresh(now)) return DistanceWidgetContour.spans(readingsAt(now))
         if (!active(now)) return targetSpans
         val t = fraction(now)
         return targetSpans.mapIndexed { index, target -> target.copy(

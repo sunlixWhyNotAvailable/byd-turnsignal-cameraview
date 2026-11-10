@@ -1279,6 +1279,7 @@ final class CameraRuntimeHost {
     }
 
     void loggingChanged() {
+        distance.loggingChanged();
         handler.post(() -> {
             try { sendMotion(new JSONObject().put("kind", "motion_logging")); }
             catch (org.json.JSONException error) { event("motion_telemetry_error", "error", error.toString()); }

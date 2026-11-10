@@ -12,8 +12,7 @@ import androidx.compose.runtime.setValue
 object DistanceWidgetUiFeed {
     private val handler = Handler(Looper.getMainLooper())
     private val expire = Runnable {
-        if (frame.valid && !frame.fresh(SystemClock.elapsedRealtime()))
-            frame = DistanceFrame.unavailable(frame.generation, frame.receivedAt, "stale")
+        frame = frame.at(SystemClock.elapsedRealtime())
     }
     var frame by mutableStateOf(DistanceFrame.unavailable(0,0,"inactive"))
         private set
@@ -21,11 +20,10 @@ object DistanceWidgetUiFeed {
         val next = DistanceFrameCodec.decode(bundle, metadataError)
         if (next.receivedAt < frame.receivedAt ||
             next.receivedAt == frame.receivedAt && next.generation < frame.generation) return
-        frame = if (next.valid && !next.fresh(SystemClock.elapsedRealtime()))
-            DistanceFrame.unavailable(next.generation, next.receivedAt, "stale_delivery") else next
+        frame = next.at(SystemClock.elapsedRealtime())
         handler.removeCallbacks(expire)
-        if (frame.valid) handler.postDelayed(expire,
-            (next.receivedAt + DistanceFrame.STALE_MS - SystemClock.elapsedRealtime()).coerceAtLeast(0))
+        if (frame.adasValid) handler.postDelayed(expire,
+            (frame.adasReceivedAt + DistanceFrame.STALE_MS - SystemClock.elapsedRealtime()).coerceAtLeast(0))
     }
     @JvmStatic fun disconnected() {
         handler.removeCallbacks(expire)

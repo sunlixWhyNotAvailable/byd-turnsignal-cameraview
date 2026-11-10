@@ -41,8 +41,9 @@ class DistanceWidgetView(context: Context) : View(context) {
     private val clip = Path()
     init { animationReady = true }
 
-    fun update(value: DistanceWidgetSettings, cornerRadius: Float, frame: DistanceFrame, displayScale: Float = 1f) {
-        sourceReceivedAt = frame.receivedAt
+    fun update(value: DistanceWidgetSettings, cornerRadius: Float, input: DistanceFrame, displayScale: Float = 1f) {
+        val frame = input.at(android.os.SystemClock.elapsedRealtime())
+        sourceReceivedAt = if (frame.adasValid) frame.adasReceivedAt else frame.receivedAt
         val nextRadius = cornerRadius * resources.displayMetrics.density * displayScale
         val nextReadings = if (frame.fresh(android.os.SystemClock.elapsedRealtime()))
             frame.distances().map { cm -> value.zoneAt(cm)?.let { DistanceReading(cm, it.color) } }
@@ -117,7 +118,10 @@ class DistanceWidgetView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        if (!currentFrame.fresh(android.os.SystemClock.elapsedRealtime())) stopAnimation()
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (currentFrame.adasValid && !currentFrame.adasFresh(now))
+            update(settings, cornerInput, currentFrame.at(now), pixelScale)
+        if (!currentFrame.fresh(now)) stopAnimation()
         val timing = drawTiming.takeIf { DiagnosticLogPolicy.extended() }
         val started = if (timing != null) android.os.SystemClock.elapsedRealtimeNanos() else 0
         val cpuStarted = if (timing != null) android.os.Debug.threadCpuTimeNanos() else 0

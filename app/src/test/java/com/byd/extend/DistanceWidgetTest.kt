@@ -25,6 +25,43 @@ class DistanceWidgetTest {
     private fun acceptFrame(bundle: Bundle) = DistanceWidgetUiFeed.accept(bundle) { throw AssertionError(it) }
     @Before fun reset() { prefs.edit().clear().commit(); DistanceWidgetUiFeed.disconnected() }
 
+    @Test fun fusedTransportExpiresOnlyAdasAndDisconnectClearsPersistentRadar() {
+        val time=SystemClock.elapsedRealtime()
+        val radar=ParkingRadarState().apply { begin(0,1); registered(0,1); callback(0x99000062.toInt(),65,time,1) }
+        val sources=DistanceSources().apply {
+            adas(DistanceFrame(4,time,true,"ready",DoubleArray(8) { 81.0 }))
+            radar(radar.snapshot())
+        }
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400))
+        val frame=sources.frame(SystemClock.elapsedRealtime())
+        val bundle=DistanceFrameCodec.encode(frame)
+        val decoded=DistanceFrameCodec.decode(bundle) { throw AssertionError(it) }
+        assertArrayEquals(frame.distances(),decoded.distances(),0.0)
+        assertEquals(frame.radarMask,decoded.radarMask)
+        assertEquals(time,decoded.adasReceivedAt)
+        acceptFrame(bundle)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        assertTrue(DistanceWidgetUiFeed.frame.valid)
+        assertFalse(DistanceWidgetUiFeed.frame.adasValid)
+        assertEquals(65.0,DistanceWidgetUiFeed.frame.distances()[0],0.0)
+        assertTrue(DistanceWidgetUiFeed.frame.distances()[1].isNaN())
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(20))
+        assertTrue(DistanceWidgetUiFeed.frame.fresh(SystemClock.elapsedRealtime()))
+        DistanceWidgetUiFeed.disconnected()
+        assertFalse(DistanceWidgetUiFeed.frame.valid)
+    }
+
+    @Test fun invalidOptionalSourceMetadataFallsBackToExpiringOriginalDistances() {
+        val time=SystemClock.elapsedRealtime()
+        val bundle=DistanceFrameCodec.encode(DistanceFrame(1,time,true,"ready",DoubleArray(8) { 50.0 }))
+        bundle.putInt("radar_mask",256)
+        var errors=0
+        val decoded=DistanceFrameCodec.decode(bundle) { errors++ }
+        assertEquals(1,errors)
+        assertEquals(50.0,decoded.distances()[0],0.0)
+        assertFalse(decoded.fresh(time+500))
+    }
+
     @Test fun visibilityUsesRawThresholdsAndManualHideSurvivesModeChanges() {
         val settings=DistanceWidgetSettings(enabled=true)
         assertEquals(0, settings.zoneAt(30.0)?.id)

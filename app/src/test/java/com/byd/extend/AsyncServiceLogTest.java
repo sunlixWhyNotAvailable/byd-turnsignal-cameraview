@@ -58,4 +58,46 @@ public class AsyncServiceLogTest {
             assertTrue(saved.contains("\"granted\":false"));
         } finally { log.close(); DiagnosticLogPolicy.configure(previous); }
     }
+
+    @Test public void distanceSourcesPersistBothMeasurementsOnlyInExtendedLocalLog() throws Exception {
+        File directory=temporary.newFolder("captures");
+        File file=new File(directory,"helper-service-distance.jsonl");
+        DistanceSources sources=new DistanceSources();
+        double[] values=new double[8]; java.util.Arrays.fill(values,81);
+        sources.adas(new DistanceFrame(1,100,true,"ready",values));
+        ParkingRadarState radar=new ParkingRadarState(); radar.begin(0,1); radar.registered(0,1);
+        radar.callback(0x99000062,65,100,1); sources.radar(radar.snapshot());
+        boolean previous=DiagnosticLogPolicy.extended();
+        AsyncServiceLog log=new AsyncServiceLog(()->file,0);
+        try {
+            DiagnosticLogPolicy.configure(false);
+            log.appendLifecycle("distance_sources_detail",100,sources.diagnostic(sources.frame(100)));
+            flush(log); assertFalse(file.exists());
+            DiagnosticLogPolicy.configure(true);
+            log.appendLifecycle("distance_sources_detail",101,sources.diagnostic(sources.frame(101)));
+            flush(log);
+            String saved=new String(Files.readAllBytes(file.toPath()),java.nio.charset.StandardCharsets.UTF_8).trim();
+            org.json.JSONObject event=new org.json.JSONObject(saved);
+            org.json.JSONObject front=event.getJSONArray("sectors").getJSONObject(0);
+            assertEquals(81,front.getDouble("adas_cm"),0);
+            assertEquals(65,front.getDouble("radar_cm"),0);
+            assertEquals(65,front.getDouble("selected_cm"),0);
+            assertEquals("radar",front.getString("selected_source"));
+            assertEquals(16,event.getJSONArray("radar_raw").length());
+            assertEquals(100,event.getLong("adas_received_ms"));
+            assertEquals(1,DiagnosticLogExporter.snapshot(directory).sources.size());
+            java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
+            try(java.util.zip.ZipOutputStream zip=new java.util.zip.ZipOutputStream(bytes)) {
+                DiagnosticLogExporter.writeAppLogs(zip,DiagnosticLogExporter.snapshot(directory),
+                        new java.util.ArrayList<>(),new DiagnosticLogExporter.ProgressTracker(null));
+            }
+            try(java.util.zip.ZipInputStream zip=new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray()))) {
+                assertEquals("logs/helper-service-distance.jsonl",zip.getNextEntry().getName());
+                java.io.ByteArrayOutputStream entry=new java.io.ByteArrayOutputStream();
+                byte[] buffer=new byte[1024]; int count;
+                while((count=zip.read(buffer))!=-1) entry.write(buffer,0,count);
+                assertEquals(saved,entry.toString("UTF-8").trim());
+            }
+        } finally { log.close(); DiagnosticLogPolicy.configure(previous); }
+    }
 }
