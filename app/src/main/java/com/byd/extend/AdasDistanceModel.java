@@ -53,6 +53,8 @@ public final class AdasDistanceModel {
         for (Obstacle object : objects) {
             double[][] box = object.corners();
             double[] distance = new double[DIRECTIONS];
+            double[] coverage = new double[16];
+            Arrays.fill(coverage, Double.NaN);
             for (int i = 0; i < DIRECTIONS; i++) {
                 distance[i] = Double.POSITIVE_INFINITY;
                 for (double[] segment : PATCHES[i]) {
@@ -69,6 +71,12 @@ public final class AdasDistanceModel {
                         covered = clip(covered, 0, Math.max(segment[0], segment[2]), false);
                     }
                     distance[i] = Math.min(distance[i], clearance(covered, segment));
+                    for (double[] p : covered) {
+                        // Project only the covered tangent range onto this physical body segment.
+                        double x=segment[0]==segment[2] ? segment[0] : p[0];
+                        double y=segment[1]==segment[3] ? segment[1] : p[1];
+                        include(coverage,i,x,y);
+                    }
                 }
                 // Corner sectors also cover the quadrant outside both sides of the car.
                 if ((i & 1) != 0) {
@@ -77,6 +85,7 @@ public final class AdasDistanceModel {
                     double y = CENTER_Y + (left ? WIDTH / 2 : -WIDTH / 2);
                     double[][] covered = clip(clip(box, 0, x, front), 1, y, left);
                     distance[i] = Math.min(distance[i], clearance(covered, new double[]{x,y,x,y}));
+                    if (covered.length != 0) include(coverage,i,x,y);
                 }
             }
             for (int i = 0; i < DIRECTIONS; i++) {
@@ -84,9 +93,19 @@ public final class AdasDistanceModel {
                     result[i] = Double.isNaN(result[i]) ? distance[i] : Math.min(result[i], distance[i]);
                 else distance[i] = Double.NaN;
             }
-            measured.add(new DistanceObject(object.id, object.type, 0, distance));
+            measured.add(new DistanceObject(object.id, object.type, 0, distance,
+                    new double[]{object.x,object.y,object.length,object.width,object.heading},coverage));
         }
         return new Result(result, measured);
+    }
+
+    private static void include(double[] coverage,int sector,double x,double y) {
+        double position=Math.atan2(CENTER_Y-y,x-CENTER_X)*4/Math.PI;
+        while (position-sector < -4) position+=8;
+        while (position-sector > 4) position-=8;
+        int index=sector*2;
+        coverage[index]=Double.isNaN(coverage[index]) ? position : Math.min(coverage[index],position);
+        coverage[index+1]=Double.isNaN(coverage[index+1]) ? position : Math.max(coverage[index+1],position);
     }
 
     private static double[][] clip(double[][] polygon, int axis, double edge, boolean greater) {

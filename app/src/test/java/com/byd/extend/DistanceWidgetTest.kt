@@ -272,4 +272,41 @@ class DistanceWidgetTest {
         assertFalse(DistanceWidgetUiFeed.frame.valid)
         assertTrue(DistanceWidgetUiFeed.frame.objects.isEmpty())
     }
+
+    @Test fun physicalCoverageRoundTripsAndOptionalCorruptionDoesNotDiscardIdentityOrDistances() {
+        val result=AdasDistanceModel.evaluate(listOf(AdasDistanceModel.Obstacle(17,2,-405.25,-.75,400.0,180.0,0.0)))
+        val input=DistanceFrame(3,1000,true,"ready",result.distances,DistanceObjectContinuity().accept(result.objects))
+        val restored=DistanceFrameCodec.decode(DistanceFrameCodec.encode(input)) { throw AssertionError(it) }
+        assertEquals(input.objects,restored.objects)
+        restored.objects.single().geometry()!![0]=0.0
+        assertEquals(-405.25,restored.objects.single().geometry()!![0],0.0)
+        val broken=DistanceFrameCodec.encode(input)
+        @Suppress("DEPRECATION")
+        val rows=broken.getParcelableArrayList<Bundle>("objects")!!
+        rows.single().putDoubleArray("coverage",doubleArrayOf(1.0))
+        val errors=mutableListOf<Exception>()
+        val compatible=DistanceFrameCodec.decode(broken) { errors.add(it) }
+        assertArrayEquals(input.distances(),compatible.distances(),0.0)
+        assertEquals(17,compatible.objects.single().id)
+        assertFalse(compatible.objects.single().hasCoverage())
+        assertEquals("Eight contour intervals required",errors.single().message)
+    }
+
+    @Test fun extendedDiagnosticContainsRawIdentityGeometryAndWinningIndicesInSerializableForm() {
+        val result=AdasDistanceModel.evaluate(listOf(
+            AdasDistanceModel.Obstacle(17,2,-405.25,-.75,400.0,180.0,0.0),
+            AdasDistanceModel.Obstacle(18,3,-500.25,-.75,400.0,180.0,0.0)))
+        val frame=DistanceFrame(3,1000,true,"ready",result.distances,DistanceObjectContinuity().accept(result.objects))
+        val sources=DistanceSources().apply { adas(frame) }
+        val json=JSONObject(DiagnosticEvent("distance","distance_frame_detail",*sources.diagnostic(sources.frame(1000))).line())
+        assertEquals("distance_frame_detail",json.getString("kind"))
+        val obj=json.getJSONArray("adas_objects").getJSONObject(0)
+        assertEquals(17,obj.getInt("id")); assertEquals(2,obj.getInt("type"))
+        assertEquals(-405.25,obj.getJSONObject("obb").getDouble("x_cm"),0.0)
+        assertEquals(180.0,obj.getJSONObject("obb").getDouble("width_cm"),0.0)
+        assertTrue(obj.getJSONArray("sector_cm").isNull(0))
+        assertTrue(obj.getJSONArray("contour_eighth_turns").getDouble(6)>3.5)
+        val indices=json.getJSONArray("sectors").getJSONObject(4).getJSONArray("adas_object_indices")
+        assertEquals(1,indices.length()); assertEquals(0,indices.getInt(0))
+    }
 }

@@ -42,13 +42,13 @@ internal class DistanceContourMotion {
             else Key(objectValue.id!!, objectValue.type!!, objectValue.continuity)
         }
         // Settings recomposition or repeated unchanged telemetry must not restart a transition.
-        if (generation == frame.generation && raw == readings && owners.contentEquals(nextOwners)) {
+        val nextSpans = DistanceWidgetContour.spans(readings, frame)
+        if (generation == frame.generation && raw == readings && owners.contentEquals(nextOwners) && targetSpans == nextSpans) {
             sourceFrame = frame; keys = nextKeys
             return false
         }
         val previousReadings = readingsAt(now)
         val previousSpans = spansAt(now)
-        val nextSpans = DistanceWidgetContour.spans(readings)
         from = DoubleArray(8) { sector ->
             val current = readings[sector]?.cm ?: return@DoubleArray Double.NaN
             val owner = nextOwners[sector]
@@ -60,7 +60,7 @@ internal class DistanceContourMotion {
         fun boundary(target: Float, owner: Key?, first: Boolean): Float {
             if (owner == null || owner !in keys) return target
             return previousSpans.asSequence().mapIndexedNotNull { index, span ->
-                if (span.sectors.size == 8) return@mapIndexedNotNull null
+                if (span.closed) return@mapIndexedNotNull null
                 val sector = if (first) span.sectors.first() else span.sectors.last()
                 if (owners[sector] != owner) return@mapIndexedNotNull null
                 val old = if (first) span.start else span.end
@@ -71,9 +71,9 @@ internal class DistanceContourMotion {
             }.minByOrNull { abs(it - target) } ?: target
         }
         fromSpans = nextSpans.mapIndexed { index, span ->
-            if (span.sectors.size == 8) return@mapIndexed span
-            var start = min(span.sectors.first().toFloat(), boundary(span.start, nextOwners[span.sectors.first()], true))
-            var end = max(span.sectors.first() + span.sectors.size - 1f,
+            if (span.closed) return@mapIndexed span
+            var start = min(span.positions.first(), boundary(span.start, nextOwners[span.sectors.first()], true))
+            var end = max(span.positions.last(),
                 boundary(span.end, nextOwners[span.sectors.last()], false))
             // Separate current runs remain separate while old edges retract.
             var previousEnd = nextSpans[(index + nextSpans.size - 1) % nextSpans.size].end
@@ -107,7 +107,7 @@ internal class DistanceContourMotion {
     }
     internal fun spansAt(now: Long): List<DistanceContourSpan> {
         if (!fresh(now)) return emptyList()
-        if (sourceFrame.adasValid && !sourceFrame.adasFresh(now)) return DistanceWidgetContour.spans(readingsAt(now))
+        if (sourceFrame.adasValid && !sourceFrame.adasFresh(now)) return DistanceWidgetContour.spans(readingsAt(now), sourceFrame.at(now))
         if (!active(now)) return targetSpans
         val t = fraction(now)
         return targetSpans.mapIndexed { index, target -> target.copy(
@@ -116,4 +116,11 @@ internal class DistanceContourMotion {
     }
     fun contours(now: Long, maximum: Int, background: Int): List<DistanceContour> =
         DistanceWidgetContour.buildSpans(readingsAt(now), maximum, background, spansAt(now))
+
+    fun labelPosition(sector: Int): Float {
+        if (sourceFrame.radarSector(sector)) return sector.toFloat()
+        val objectValue = sourceFrame.objects.firstOrNull { it.hasCoverage() && it.distance(sector) == raw[sector]?.cm }
+            ?: return sector.toFloat()
+        return ((objectValue.coverageStart(sector) + objectValue.coverageEnd(sector)) / 2).toFloat()
+    }
 }

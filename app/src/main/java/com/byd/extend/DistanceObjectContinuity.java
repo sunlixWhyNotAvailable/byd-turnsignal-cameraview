@@ -15,7 +15,7 @@ final class DistanceObjectContinuity {
         List<DistanceObject> result = new ArrayList<>(objects.size());
         for (DistanceObject object : objects) {
             if (object.id == null || duplicates.contains(object.id)) {
-                result.add(new DistanceObject(null, null, 0, object.distances()));
+                result.add(object.withContinuity(0));
                 continue;
             }
             DistanceObject old = previous.get(object.id);

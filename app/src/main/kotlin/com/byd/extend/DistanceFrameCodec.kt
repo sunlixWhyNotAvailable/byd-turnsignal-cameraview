@@ -20,6 +20,8 @@ internal object DistanceFrameCodec {
                 putLong("continuity", objectValue.continuity)
             }
             putDoubleArray("distances", objectValue.distances())
+            objectValue.geometry()?.let { putDoubleArray("geometry", it) }
+            objectValue.coverage()?.let { putDoubleArray("coverage", it) }
         } }))
     }
 
@@ -29,9 +31,17 @@ internal object DistanceFrameCodec {
         val objects = try {
             bundle.getParcelableArrayList<Bundle>("objects")?.map { row ->
                 val identified = row.containsKey("id") && row.containsKey("type")
-                DistanceObject(if (identified) row.getInt("id") else null,
-                    if (identified) row.getInt("type") else null, row.getLong("continuity"),
-                    requireNotNull(row.getDoubleArray("distances")) { "Missing object sectors" })
+                val id = if (identified) row.getInt("id") else null
+                val type = if (identified) row.getInt("type") else null
+                val distances = requireNotNull(row.getDoubleArray("distances")) { "Missing object sectors" }
+                DistanceFrame.validateDistances(distances)
+                try {
+                    DistanceObject(id, type, row.getLong("continuity"), distances,
+                        row.getDoubleArray("geometry"), row.getDoubleArray("coverage"))
+                } catch (error: Exception) {
+                    metadataError.accept(error)
+                    DistanceObject(id, type, row.getLong("continuity"), distances)
+                }
             }.orEmpty()
         } catch (error: Exception) {
             metadataError.accept(error)

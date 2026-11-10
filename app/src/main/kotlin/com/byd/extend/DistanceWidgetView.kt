@@ -148,11 +148,14 @@ class DistanceWidgetView(context: Context) : View(context) {
             if (a.x != b.x || a.y != b.y) {
                 paint.shader = LinearGradient(a.x,a.y,b.x,b.y,a.color,b.color,Shader.TileMode.CLAMP)
                 canvas.drawLine(a.x,a.y,b.x,b.y,paint)
+            } else {
+                paint.shader = null; paint.color = a.color
+                canvas.drawPoint(a.x,a.y,paint)
             }
         } }
         paint.shader = null
         if (settings.showDistance) readings.forEachIndexed { index, reading -> reading?.let {
-            val p = DistanceWidgetContour.point(index.toFloat(), it.cm.toFloat(), settings.zones.last().endCm,
+            val p = DistanceWidgetContour.point(motion.labelPosition(index), it.cm.toFloat(), settings.zones.last().endCm,
                 it.color, settings.profile.backgroundPercent)
             val dx = p.x-300; val dy=p.y-300; val length=hypot(dx,dy)
             text.color=it.color; text.textSize=24f

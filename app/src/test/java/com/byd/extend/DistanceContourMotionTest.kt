@@ -148,7 +148,7 @@ class DistanceContourMotionTest {
         feed(motion,frame(1000,first))
         assertFalse(feed(motion,frame(1100,returned)))
         val duplicates = continuity.accept(listOf(objectValue(1,0 to 30.0),objectValue(1,1 to 60.0)))
-        assertTrue(duplicates.all { it.id == null })
+        assertTrue(duplicates.all { it.id == 1 && it.type == 1 && it.continuity == 0L })
         val next = continuity.accept(listOf(objectValue(1,0 to 100.0))).single()
         assertNotEquals(returned.continuity,next.continuity)
         continuity.clear()
