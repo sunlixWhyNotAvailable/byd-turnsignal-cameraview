@@ -1903,8 +1903,17 @@ final class TurnSignalGuardRuntime {
                 ? "telemetry_or_control_not_ready" : primaryTelemetryError;
     }
 
+    private final DiagnosticTimingWindow eventTiming = new DiagnosticTimingWindow("submit_us", "cpu_us");
     private void emit(String kind, Object... fields) {
+        boolean measured = eventTiming.enabled();
+        long start = measured ? System.nanoTime() : 0, cpu = measured ? android.os.Debug.threadCpuTimeNanos() : 0;
+        CriticalOperationTrace.phase("telemetry_event_submit");
         eventSink.accept(kind, fields);
+        if (measured) {
+            Object[] report = eventTiming.recordContext(SystemClock.elapsedRealtime(), new Object[]{"event", kind},
+                    (System.nanoTime()-start)/1000, (android.os.Debug.threadCpuTimeNanos()-cpu)/1000);
+            if (report != null) eventSink.accept("telemetry_event_metrics", report);
+        }
     }
 
     private void postTimer(Runnable task, long delayMs) {

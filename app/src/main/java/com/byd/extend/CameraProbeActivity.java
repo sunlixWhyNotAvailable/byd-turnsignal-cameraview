@@ -13137,7 +13137,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void writeLine(String line) {
         AsyncServiceLog log = activityLog;
-        if (log != null) log.appendRaw(line);
+        if (log != null && !"distance_sources_detail".equals(DiagnosticLogPolicy.kind(line))) log.appendRaw(line);
     }
 
 

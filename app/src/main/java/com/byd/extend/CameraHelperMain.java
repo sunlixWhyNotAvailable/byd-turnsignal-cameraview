@@ -90,7 +90,6 @@ final class CameraHelperMain {
         private final TurnSignalController turnController;
         private final CameraRuntimeClient cameraRuntime;
         private final Consumer<String> logSink;
-        private final DiagnosticLogPolicy logcatPolicy = new DiagnosticLogPolicy();
         private final SharedPreferences counters;
         private final SharedPreferences settings;
         private final ArrayDeque<String> musicJournal = new ArrayDeque<>();
@@ -105,7 +104,7 @@ final class CameraHelperMain {
         private int producerCameraId = -1;
         private int producerEpoch;
         private int sourceHubGeneration;
-        private DirectCameraSourceHub rawSourceHub;
+        private volatile DirectCameraSourceHub rawSourceHub;
         private boolean unconfirmedOneShotOwner;
         private Surface surface;
         private int previewIndex;
@@ -171,6 +170,11 @@ final class CameraHelperMain {
         }
 
         CameraRuntimeClient cameraRuntime() { return cameraRuntime; }
+
+        void flushDiagnostics(Runnable completion) {
+            Runnable barrier = () -> diagnosticEvents.flush(() -> logcatEvents.flush(completion));
+            if (!callbackHandler.post(barrier)) barrier.run();
+        }
 
         void foregroundAdbFinished(boolean authorized) {
             turnController.foregroundAdbFinished(authorized);
@@ -343,6 +347,7 @@ final class CameraHelperMain {
             closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
                     "terminate_shells", terminateShells);
+            flushDiagnostics(() -> { diagnosticEvents.close(); logcatEvents.close(); });
         }
 
         void shutdownKeepingAvas() {
@@ -351,6 +356,7 @@ final class CameraHelperMain {
             closeCamera("service_destroyed");
             emit("helper_shutdown", "reason", "service_destroyed",
                     "terminate_shells", true, "avas_retained", true);
+            flushDiagnostics(() -> { diagnosticEvents.close(); logcatEvents.close(); });
         }
 
         @Override
@@ -1806,6 +1812,12 @@ final class CameraHelperMain {
 
         void invalidateReverseOverlayShows(int requestId, String reason) {
             turnController.invalidateReverseOverlayShows(requestId, reason);
+        }
+
+        void hideReverseOverlays(int requestId, long expectedEpoch, Surface[] surfaces, int[] tablet, int[] cluster, Consumer<Boolean> completion) {
+            DirectCameraSourceHub hub = rawSourceHub;
+            if (hub != null) hub.quiesce(surfaces, requestId);
+            turnController.hideReverseOverlays(requestId, expectedEpoch, tablet, cluster, completion);
         }
 
         void closeReverseOverlayWindow(String reason, Consumer<Boolean> completion) {
@@ -5627,31 +5639,16 @@ final class CameraHelperMain {
             };
         }
 
+        private final AsyncServiceLog diagnosticEvents = new AsyncServiceLog(this::forwardLine, null);
+
         private void emit(String kind, Object... fields) {
             if ("camera_error".equals(kind)
                     && "camera_viewing".equals(fieldString(fields, "camera_owner"))
                     && viewingOutput != null) viewingOutput.failed("camera_source_failed");
             if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
-            String line;
-            try {
-                JSONObject json = new JSONObject();
-                json.put("kind", kind);
-                json.put("source", "helper");
-                json.put("wall_time", new SimpleDateFormat(
-                        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(new Date()));
-                json.put("t_ms", SystemClock.elapsedRealtime());
-                for (int i = 0; i + 1 < fields.length; i += 2) {
-                    json.put(String.valueOf(fields[i]), fields[i + 1]);
-                }
-                line = json.toString();
-            } catch (Throwable error) {
-                String detail = com.byd.extend.remote.CameraViewingDiagnostics.describe(error);
-                Log.e(TAG, "helper_json_error kind=" + kind + "\n" + detail);
-                // Only strings reach this fallback; never serialize the failing fields again.
-                line = "{\"kind\":\"helper_json_error\",\"source\":\"helper\",\"failed_kind\":"
-                        + JSONObject.quote(kind) + ",\"error\":" + JSONObject.quote(detail) + "}";
-            }
-            forwardLine(line);
+            DiagnosticEvent event = new DiagnosticEvent("helper", kind, fields);
+            if (DiagnosticLogPolicy.diagnosticOnly(kind)) diagnosticEvents.appendEvent(event);
+            else callbackHandler.post(() -> forwardLine(event.line()));
         }
 
         private void acceptControllerEvent(String kind, Object[] fields) {
@@ -6246,25 +6243,11 @@ final class CameraHelperMain {
                     .commit();
         }
 
+        private final AsyncServiceLog logcatEvents = new AsyncServiceLog(line -> Log.i(TAG, line), null);
+
         private void forwardLine(String line) {
-            if (line == null) {
-                Log.i(TAG, line);
-            } else {
-                String kind = DiagnosticLogPolicy.kind(line);
-                if (DiagnosticLogPolicy.shouldPersist(kind)) {
-                    String summary;
-                    boolean suppress;
-                    synchronized (logcatPolicy) {
-                        long now = kind.contains("error") || kind.contains("failed")
-                                || kind.contains("failure") || kind.contains("unavailable")
-                                ? SystemClock.elapsedRealtime() : 0L;
-                        summary = logcatPolicy.before(line, kind, now);
-                        suppress = logcatPolicy.suppressed();
-                    }
-                    if (summary != null) Log.i(TAG, summary);
-                    if (!suppress) Log.i(TAG, line);
-                }
-            }
+            if (line == null) return;
+            logcatEvents.appendRaw(line);
             logSink.accept(line);
             IBinder current;
             synchronized (this) {

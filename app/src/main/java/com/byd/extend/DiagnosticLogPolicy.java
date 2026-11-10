@@ -34,12 +34,14 @@ public final class DiagnosticLogPolicy {
             "motion_frame_performance", "motion_process_cpu",
             "weather_location_detail", "distance_frame_detail", "distance_render_detail", "distance_sources_detail",
             "distance_source_metrics", "distance_render_metrics", "distance_animation_metrics", "distance_visibility_detail",
-            "distance_stale_detail", "reverse_phase_detail"));
+            "distance_stale_detail", "reverse_phase_detail", "diagnostic_writer_metrics",
+            "critical_thread_pause", "distance_publish_metrics", "telemetry_dispatch_metrics",
+            "camera_acquisition_phases", "camera_output_phases", "camera_read_fence_metrics", "telemetry_apply_metrics", "telemetry_get_metrics", "telemetry_event_metrics"));
     // These detail records also drive runtime state. Keep their full IPC delivery with logging OFF.
     private static final Set<String> FUNCTIONAL_DETAIL = new HashSet<>(Arrays.asList(
             "vehicle_state", "parking_radar_state", "camera_overlay_frame", "reverse_overlay_frame",
             "avm_event", "parking_radar_snapshot", "music_metadata_publish", "music_journal_snapshot",
-            "lifetime_counters", "reverse_steering_state", "dewarp_mesh_applied"));
+            "lifetime_counters", "reverse_steering_state", "dewarp_mesh_applied", "motion_vehicle_state"));
     private String lastError = "", lastKind = "";
     private long firstAt, lastAt, repeats;
     private boolean suppressed;
@@ -53,16 +55,22 @@ public final class DiagnosticLogPolicy {
             "music_awake_reconcile", "music_acc_reconcile", "music_metadata_awake",
             "motion_status", "motion_screen"));
     private static final Set<String> CLOCK_FIELDS = new HashSet<>(Arrays.asList(
-            "t_ms", "wall_time", "wall_time_ms", "wall_ms", "elapsed_ms", "uptime_ms", "time"));
+            "t_ms", "wall_time", "wall_time_ms", "wall_ms", "elapsed_ms", "uptime_ms", "time", "event_sequence"));
 
     public static synchronized void configure(boolean enabled) {
         if (extended != enabled) revision++;
         extended = enabled;
+        if (!enabled) CriticalOperationTrace.reset();
         OemLogPolicy.configure(enabled);
     }
     public static boolean extended() { return extended; }
     public static long revision() { return revision; }
-    static void print(String line) {
+    private static final class Output {
+        static final AsyncServiceLog LOG = new AsyncServiceLog(DiagnosticLogPolicy::printNow, System.out::flush);
+    }
+    static void print(String line) { Output.LOG.appendRaw(line); }
+    static void printEvent(DiagnosticEvent event) { Output.LOG.appendEvent(event); }
+    private static void printNow(String line) {
         String kind = kind(line);
         if (!shouldPersist(kind)) return;
         String summary;
@@ -75,16 +83,15 @@ public final class DiagnosticLogPolicy {
         if (!suppress) System.out.println(line);
     }
     static void flushOutput() {
-        String summary;
-        synchronized (STDOUT) { summary = STDOUT.finish(); }
-        if (summary != null) System.out.println(summary);
-        System.out.flush();
+        Output.LOG.flush(null);
     }
+    static void flushOutput(Runnable completion) { Output.LOG.flush(completion); }
     static boolean isDetail(String kind) { return DETAIL.contains(kind); }
     public static boolean shouldPersist(String kind) { return extended || !isDetail(kind); }
     public static boolean shouldProduce(String kind) {
         return shouldPersist(kind) || FUNCTIONAL_DETAIL.contains(kind);
     }
+    static boolean diagnosticOnly(String kind) { return isDetail(kind) && !FUNCTIONAL_DETAIL.contains(kind); }
     static String kind(String line) {
         // All internal writers use an unescaped ASCII event name. Avoid parsing every telemetry JSON.
         int key = line.indexOf("\"kind\"");

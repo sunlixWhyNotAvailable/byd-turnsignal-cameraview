@@ -25,6 +25,7 @@ final class TurnSignalTelemetryHistory {
         final String name;
         final long queued, started, cpuStarted;
         long finished = -1, cpuNs = -1;
+        CriticalOperationTrace trace;
         Operation(String name, long queued, long started, long cpuStarted) {
             this.name = name; this.queued = queued; this.started = started; this.cpuStarted = cpuStarted;
         }

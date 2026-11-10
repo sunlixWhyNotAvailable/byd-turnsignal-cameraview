@@ -27,17 +27,19 @@ final class DistanceAdasSource {
     private final BiConsumer<String,Object[]> events;
     private final LatestValueDispatcher<Packet> packets;
     private static final class Packet {
-        final long connection, received;
+        final long connection, received, wallReceived;
+        final Long oemTimestamp;
         final byte[] payload;
-        Packet(long connection, long received, byte[] payload) {
-            this.connection=connection; this.received=received; this.payload=payload;
+        Packet(long connection, long received, long wallReceived, Long oemTimestamp, byte[] payload) {
+            this.connection=connection; this.received=received; this.wallReceived=wallReceived; this.oemTimestamp=oemTimestamp; this.payload=payload;
         }
     }
     private final Set<Long> subscribed=new LinkedHashSet<>();
     private volatile Object proxy;
     private Object callback;
     private Class<?> api, callbackClass;
-    private Method getTopic, getPayload;
+    private Method getTopic, getPayload, getTimestamp;
+    private volatile boolean timestampFailureReported;
     private AdasObstacleDecoder decoder;
     private final DistanceObjectContinuity continuity = new DistanceObjectContinuity();
     private ClassLoader loader;
@@ -85,6 +87,9 @@ final class DistanceAdasSource {
             callbackClass=loader.loadClass("ts.car.someip.sdk.SomeIpCallback");
             Class<?> data=loader.loadClass("ts.car.someip.sdk.common.SomeIpData");
             getTopic=data.getMethod("getTopic"); getPayload=data.getMethod("getPayload");
+            try { getTimestamp=data.getMethod("getTimeStamp"); }
+            catch (NoSuchMethodException absent) { getTimestamp=null; logError("optional_oem_timestamp", absent); }
+            timestampFailureReported=false;
             decoder=new AdasObstacleDecoder(loader);
             proxy=call(api.getMethod("getInstance",Context.class),null,identity);
             if(proxy==null) throw new IllegalStateException("SOME/IP getInstance returned null");
@@ -100,11 +105,18 @@ final class DistanceAdasSource {
                     if(active(connection)) packets.control(()-> { if(active(connection)) status(ready); });
                 } else if(method.getName().equals("onSomeIpEvent") && args!=null && args.length==1) {
                     final long received=SystemClock.elapsedRealtime();
+                    final long receivedWall=DiagnosticLogPolicy.extended()?System.currentTimeMillis():0;
                     try {
                         long topic=((Number)call(getTopic,args[0])).longValue();
                         if(topic!=DATA && topic!=AVAILABLE && topic!=UNAVAILABLE) return null;
                         if (!active(connection)) return null;
-                        if(topic==DATA) packets.offer(new Packet(connection,received,((byte[])call(getPayload,args[0])).clone()));
+                        if(topic==DATA) {
+                            Long timestamp=null;
+                            if(DiagnosticLogPolicy.extended() && getTimestamp!=null) try {
+                                timestamp=((Number)call(getTimestamp,args[0])).longValue();
+                            } catch(Throwable failure) { if(!timestampFailureReported) { timestampFailureReported=true; logError("optional_oem_timestamp",failure); } }
+                            packets.offer(new Packet(connection,received,receivedWall,timestamp,((byte[])call(getPayload,args[0])).clone()));
+                        }
                         else packets.control(()-> { if(active(connection)) availability(topic); });
                     } catch(Throwable error) { packets.control(()-> { if(active(connection)) error("callback",error); }); }
                 }
@@ -135,6 +147,11 @@ final class DistanceAdasSource {
         if(topic==AVAILABLE) { try { subscribe(DATA); } catch(Throwable error) { error("resubscribe",error); } return; }
     }
     private void receive(Packet packet, long token) {
+        CriticalOperationTrace trace = CriticalOperationTrace.begin("distance_receive", events,
+                "generation", packet.connection, "received_ms", packet.received, "oem_timestamp_raw", packet.oemTimestamp);
+        try { processPacket(packet, token); } finally { CriticalOperationTrace.end(trace); }
+    }
+    private void processPacket(Packet packet, long token) {
         if(!active(packet.connection) || !packets.current(token) || !started || !subscribed.contains(DATA)) return;
         long received=packet.received, now=SystemClock.elapsedRealtime();
         if(now<received || now-received>=DistanceFrame.STALE_MS) { expired++; invalidate("stale_delivery"); return; }
@@ -144,11 +161,13 @@ final class DistanceAdasSource {
         long cpuStart=measure?android.os.Debug.threadCpuTimeNanos():0;
         String operation="decode_model";
         try {
+            CriticalOperationTrace.phase("distance_decode");
             List<AdasDistanceModel.Obstacle> objects=decoder.decode(packet.payload);
             Exception identityError=decoder.takeIdentityError();
             if(identityError!=null) logError("optional_obstacle_identity",identityError);
             long decoded=measure?SystemClock.elapsedRealtimeNanos():0;
             long decodedCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
+            CriticalOperationTrace.phase("distance_model");
             AdasDistanceModel.Result measured=AdasDistanceModel.evaluate(objects);
             long modeled=measure?SystemClock.elapsedRealtimeNanos():0;
             long modeledCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
@@ -160,6 +179,7 @@ final class DistanceAdasSource {
             current=next; count++;
             if(recovering) emit("distance_source_ready","generation",generation);
             operation="publish_frame";
+            CriticalOperationTrace.phase("distance_publish");
             frames.accept(current);
             long published=measure?SystemClock.elapsedRealtimeNanos():0;
             long publishedCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
@@ -167,7 +187,9 @@ final class DistanceAdasSource {
             handler.postDelayed(stale,Math.max(0,received+DistanceFrame.STALE_MS-SystemClock.elapsedRealtime()));
             if(measure && policyRevision==DiagnosticLogPolicy.revision() && DiagnosticLogPolicy.extended()) {
                 operation="frame_diagnostic";
-                Object[] report=timing.record(SystemClock.elapsedRealtime(), (published-start)/1000,
+                Object[] report=timing.recordContext(SystemClock.elapsedRealtime(), new Object[]{
+                        "oem_timestamp_raw",packet.oemTimestamp,"oem_clock","unverified",
+                        "received_ms",received,"received_wall_ms",packet.wallReceived,"processed_ms",now}, (published-start)/1000,
                         now-received, (decoded-start)/1000, (decodedCpu-cpuStart)/1000,
                         (modeled-decoded)/1000, (modeledCpu-decodedCpu)/1000,
                         (published-modeled)/1000, (publishedCpu-modeledCpu)/1000,

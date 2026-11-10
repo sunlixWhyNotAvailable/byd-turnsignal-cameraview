@@ -1038,9 +1038,11 @@ public final class CameraHelperService extends Service {
         }
         if (ACTION_FLUSH_LOGS.equals(action)) {
             ResultReceiver receiver = command.flushReceiver;
-            serviceLog.flush(() -> {
+            Runnable flush = () -> serviceLog.flush(() -> {
                 if (receiver != null) receiver.send(0, Bundle.EMPTY);
             });
+            if (cameraRuntime != null) cameraRuntime.flushDiagnostics(() -> { if (!postRuntime(flush)) flush.run(); });
+            else flush.run();
         }
         if (ACTION_AUTO_START_CHANGED.equals(action)) {
             GuardRecovery.setAutoStartEnabled(this, command.enabled);
@@ -2115,6 +2117,11 @@ public final class CameraHelperService extends Service {
 
     private void acceptHelperLine(String line) {
         if (line == null) return;
+        if (DiagnosticLogPolicy.diagnosticOnly(DiagnosticLogPolicy.kind(line))) {
+            AsyncServiceLog log = serviceLog;
+            if (log != null) log.appendRaw(line);
+            return;
+        }
         if (line.contains("\"rescue_button\"") || line.contains("\"rescue_transport\"")
                 || line.contains("\"helper_death\"") || line.contains("\"helper_ping_failed\""))
             CallsRuntime.acceptRescueEvent(line);

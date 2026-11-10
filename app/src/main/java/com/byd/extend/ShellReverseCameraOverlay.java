@@ -126,6 +126,7 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 }
             }
         }
+        if (!active || requestId != spec.requestId) visibilityFence.newSession();
         requestId = spec.requestId;
         phase("reuse_checks", requestId, timing);
         rearSteeringShift = spec.rearSteeringShift;
@@ -183,7 +184,8 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
     }
 
     void updateSteering(int expectedRequestId, ReverseSteeringSample sample) {
-        if (!active || root == null || expectedRequestId != requestId) return;
+        if (!active || root == null || expectedRequestId != requestId
+                || !visibilityFence.permits(expectedRequestId, surfaceGenerations)) return;
         steeringSample = sample;
         applySteering();
     }
@@ -215,6 +217,10 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
 
     void setVisible(int expectedRequestId, int[] expectedGenerations, boolean nextVisible) {
         requireRequest(expectedRequestId);
+        if (!Arrays.equals(expectedGenerations, surfaceGenerations))
+            throw new IllegalStateException("stale reverse Surface generations");
+        if (nextVisible && !visibilityFence.permits(expectedRequestId, expectedGenerations))
+            throw new IllegalStateException("reverse request already hidden");
         if (nextVisible) {
             if (!root.framesReady(expectedRequestId, expectedGenerations)
                     || completedFrameRequestId != expectedRequestId) {
@@ -246,6 +252,15 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
                 "request_id", requestId,
                 "display_target", displayTarget,
                 "surface_generations", Arrays.toString(expectedGenerations));
+    }
+
+    private final ReverseVisibilityFence visibilityFence = new ReverseVisibilityFence();
+    void hideRequest(int expectedRequestId, int[] expectedGenerations) {
+        if (!isOpenForRequest(expectedRequestId)) return;
+        if (!Arrays.equals(expectedGenerations, surfaceGenerations))
+            throw new IllegalStateException("stale reverse hide Surface generations");
+        visibilityFence.hide(expectedRequestId, expectedGenerations);
+        setVisible(expectedRequestId, expectedGenerations, false);
     }
 
     void updateVisuals(int cornerRadiusDp, int transparencyPercent) {

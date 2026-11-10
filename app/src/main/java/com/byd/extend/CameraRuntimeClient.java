@@ -445,6 +445,35 @@ final class CameraRuntimeClient {
         return command(operation, flag, scope, bundle, 0);
     }
 
+    void flushDiagnostics(Runnable completion) {
+        IBinder target = shell;
+        if (target == null) { handler.post(completion); return; }
+        java.util.concurrent.atomic.AtomicBoolean finished = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable timeout = () -> {
+            if (!finished.compareAndSet(false, true)) return;
+            events.accept(new DiagnosticEvent("camera_client", "diagnostic_flush_timeout", "deadline_ms", 5000).line());
+            completion.run();
+        };
+        handler.postDelayed(timeout, 5000);
+        Runnable complete = () -> { if (finished.compareAndSet(false, true)) { handler.removeCallbacks(timeout); completion.run(); } };
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeInt(CameraRuntimeHost.FLUSH_DIAGNOSTICS);
+            data.writeStrongBinder(callback);
+            new android.os.ResultReceiver(handler) {
+                @Override protected void onReceiveResult(int code, Bundle result) { complete.run(); }
+            }.writeToParcel(data, 0);
+            if (!target.transact(TurnSignalShellProtocol.TX_CAMERA_RUNTIME, data, reply, 0))
+                throw new IllegalStateException("camera diagnostic flush unsupported");
+            reply.readException();
+        } catch (Exception error) {
+            deliverEvent(new DiagnosticEvent("camera_client", "diagnostic_flush_failed", "error",
+                    com.byd.extend.remote.CameraViewingDiagnostics.describe(error)).line());
+            handler.post(complete);
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
     private Bundle command(int operation, boolean flag, String scope, Bundle bundle, int platformValue) {
         IBinder target = shell;
         if (target == null) return null;

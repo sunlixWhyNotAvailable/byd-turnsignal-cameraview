@@ -30,6 +30,8 @@ final class CameraRuntimeHost {
     static final int POWER_QUICKBOOT = 1, POWER_SCREEN_OFF = 2, POWER_SCREEN_ON = 3,
             POWER_USER_PRESENT = 4;
     static final int EVENT = 1, PREFERENCES = 2, AVM_CONFIG = 3, DISTANCE_FRAME = 4;
+    static final int FLUSH_DIAGNOSTICS = 33;
+    private final Consumer<Runnable> flushShell;
     private final HandlerThread thread = new HandlerThread("camera-runtime");
     private final Handler handler;
     private final HandlerThread distanceThread = new HandlerThread("distance-runtime");
@@ -100,11 +102,13 @@ final class CameraRuntimeHost {
     }; }
 
     CameraRuntimeHost(Context system, int appUid, Consumer<String> journal,
-            java.util.function.BiConsumer<Integer, Integer> platformSignal) throws Exception {
+            java.util.function.BiConsumer<Integer, Integer> platformSignal, Consumer<Runnable> flushShell) throws Exception {
         this.appUid = appUid;
         distanceIdentity = TurnSignalShellMain.shellContext(system);
         this.journal = journal;
+        diagnosticEvents = new AsyncServiceLog(line -> { journal.accept(line); sendToClient(EVENT, line, null); }, null);
         this.platformSignal = platformSignal;
+        this.flushShell = flushShell;
         viewingHelperApkIdentity = CameraViewingShellProtocol.currentApkIdentity(system);
         context = new CameraRuntimeContext(system, appUid, this::readAvmConfig,
                 value -> platformSignal.accept(POWER, value));
@@ -145,6 +149,14 @@ final class CameraRuntimeHost {
             if (lifetime.stopped() && operation != STOP) throw new IllegalStateException("camera runtime stopped");
             if (owner == null || lifetime.client() != owner)
                 throw new IllegalStateException("camera client attachment expired");
+            if (operation == FLUSH_DIAGNOSTICS) {
+                android.os.ResultReceiver done = android.os.ResultReceiver.CREATOR.createFromParcel(data);
+                distanceHandler.post(() -> helper.flushDiagnostics(() ->
+                        flushShell.accept(() -> handler.post(() -> diagnosticEvents.flush(() ->
+                                DiagnosticEvent.flushCamera(() -> DiagnosticLogPolicy.flushOutput(() ->
+                                        done.send(0, Bundle.EMPTY))))))));
+                reply.writeNoException(); return operation;
+            }
             if (operation == SETTINGS && settings != null) {
                 context.overlayAllowed = flag;
                 Bundle delta = new Bundle(settings);
@@ -1092,6 +1104,7 @@ final class CameraRuntimeHost {
     }
 
     void acceptTelemetry(String line) {
+        if (line != null && DiagnosticLogPolicy.diagnosticOnly(DiagnosticLogPolicy.kind(line))) return;
         JSONObject parsed = parseEvent(line);
         if (parsed != null && "camera_vehicle_power_state".equals(parsed.optString("kind"))) {
             acceptCameraVehiclePowerState(parsed, line);
@@ -1345,8 +1358,13 @@ final class CameraRuntimeHost {
     }
 
     private void acceptCameraLine(String line) {
-        handler.post(() -> {
-            if (lifetime.stopped() || !lifetime.started()) return;
+        if (line != null && DiagnosticLogPolicy.diagnosticOnly(DiagnosticLogPolicy.kind(line))) {
+            journal.accept(line);
+            sendToClient(EVENT, line, null);
+            return;
+        }
+        if (!handler.post(() -> {
+            if (lifetime.stopped() || !lifetime.started()) { journal.accept(line); return; }
             JSONObject event = parseEvent(line);
             if (event != null && "camera_producer_closed".equals(event.optString("kind")))
                 motionWakeRecovery.sourceClosed(event.optInt("producer_epoch", -1));
@@ -1354,20 +1372,20 @@ final class CameraRuntimeHost {
             dispatch(line);
             journal.accept(line);
             send(EVENT, line, null);
-        });
+        })) DiagnosticLogPolicy.print(line);
     }
+
+    private final AsyncServiceLog diagnosticEvents;
 
     private void event(String kind, Object... fields) {
         if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
-        try {
-            JSONObject event = new JSONObject().put("kind", kind).put("source", "camera_runtime")
-                    .put("t_ms", android.os.SystemClock.elapsedRealtime());
-            for (int i = 0; i + 1 < fields.length; i += 2) event.put(String.valueOf(fields[i]), fields[i + 1]);
-            String line = event.toString();
+        DiagnosticEvent event = new DiagnosticEvent("camera_runtime", kind, fields);
+        if (DiagnosticLogPolicy.diagnosticOnly(kind)) diagnosticEvents.appendEvent(event);
+        else if (!handler.post(() -> {
+            String line = event.line();
+            sendToClient(EVENT, line, null);
             journal.accept(line);
-            if (kind.startsWith("distance_")) sendToClient(EVENT, line, null);
-            else send(EVENT, line, null);
-        } catch (org.json.JSONException error) { throw new IllegalArgumentException(error); }
+        })) DiagnosticLogPolicy.printEvent(event);
     }
 
     private void send(int code, String line, Bundle settings) {
@@ -1512,6 +1530,7 @@ final class CameraRuntimeHost {
             if (mirror != null) mirror.shutdown();
             if (blind != null) blind.shutdown();
             helper.shutdown(true);
+            distanceHandler.post(() -> { diagnosticEvents.close(); distanceThread.quitSafely(); });
             thread.quitSafely();
         });
     }

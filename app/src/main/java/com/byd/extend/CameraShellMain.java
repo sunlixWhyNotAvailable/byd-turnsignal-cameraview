@@ -440,6 +440,35 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_REVERSE_HIDE_BATCH) {
+                    int requestId = data.readInt();
+                    long epoch = data.readLong();
+                    int count = data.readInt();
+                    if (requestId <= 0 || epoch <= 0 || count < 0 || count > 2)
+                        throw new IllegalArgumentException("invalid reverse batch identity");
+                    int[] targets = new int[count]; int[][] generations = new int[count][];
+                    for (int i = 0; i < count; i++) {
+                        targets[i] = readReverseDisplayTarget(data); generations[i] = readReverseGenerations(data);
+                        if (i > 0 && targets[0] == targets[i]) throw new IllegalArgumentException("duplicate reverse target");
+                    }
+                    runOnMain("hide_batch", requestId, -1, () -> {
+                        Throwable primary = null;
+                        for (int i = 0; i < count; i++) {
+                            long start = SystemClock.elapsedRealtime();
+                            try { reverseOverlay(targets[i]).hideRequest(requestId, generations[i]); }
+                            catch (Throwable failure) {
+                                if (primary == null) primary = failure; else primary.addSuppressed(failure);
+                            } finally {
+                                if (DiagnosticLogPolicy.extended()) emit("reverse_phase_detail", "stage", "hide_display",
+                                        "request_id", requestId, "camera_shell_epoch", epoch,
+                                        "display_target", targets[i], "run_ms", SystemClock.elapsedRealtime()-start);
+                            }
+                        }
+                        if (primary != null) throw new IllegalStateException("reverse batch hide failed", primary);
+                        return null;
+                    });
+                    reply.writeNoException(); return true;
+                }
                 if (code == CameraShellProtocol.TX_REVERSE_SET_VISIBLE) {
                     int requestId = data.readInt();
                     int displayTarget = readReverseDisplayTarget(data);
@@ -854,7 +883,8 @@ public final class CameraShellMain {
                 if (processTerminationRequested) return;
                 processTerminationRequested = true;
             }
-            processTerminator.run();
+            Runnable finish = () -> diagnosticEvents.flush(() -> DiagnosticLogPolicy.flushOutput(processTerminator));
+            if (!handler.post(finish)) finish.run();
         }
 
         private void emit(String kind, Object... fields) {
@@ -867,27 +897,14 @@ public final class CameraShellMain {
                 }
             }
             if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
-            String line;
-            try {
-                JSONObject json = new JSONObject();
-                json.put("kind", kind);
-                json.put("source", "camera_shell_helper");
-                json.put("wall_time", new SimpleDateFormat(
-                        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(new Date()));
-                json.put("t_ms", SystemClock.elapsedRealtime());
-                if ("camera_overlay_first_frame".equals(kind)) {
-                    for (Map.Entry<String, Object> field : eventFieldMap(fields).entrySet()) {
-                        json.put(field.getKey(), field.getValue());
-                    }
-                } else {
-                    for (int i = 0; i + 1 < fields.length; i += 2) {
-                        json.put(String.valueOf(fields[i]), fields[i + 1]);
-                    }
-                }
-                line = json.toString();
-            } catch (Throwable error) {
-                line = "{\"kind\":\"camera_shell_json_error\"}";
-            }
+            DiagnosticEvent event = new DiagnosticEvent("camera_shell_helper", kind, fields);
+            if (DiagnosticLogPolicy.diagnosticOnly(kind)) diagnosticEvents.appendEvent(event);
+            else handler.post(() -> forwardEvent(event.line()));
+        }
+
+        private final AsyncServiceLog diagnosticEvents = new AsyncServiceLog(this::forwardEvent, null);
+        private void forwardEvent(String line) {
+            String kind = DiagnosticLogPolicy.kind(line);
             if (DiagnosticLogPolicy.shouldPersist(kind)) {
                 DiagnosticLogPolicy.print(line);
                 scheduleStdoutFlush();
@@ -1024,8 +1041,7 @@ public final class CameraShellMain {
     }
 
     private static void terminateProcess() {
-        DiagnosticLogPolicy.flushOutput();
-        Process.killProcess(Process.myPid());
+        DiagnosticLogPolicy.flushOutput(() -> Process.killProcess(Process.myPid()));
     }
 
     private static String summary(Throwable error) {

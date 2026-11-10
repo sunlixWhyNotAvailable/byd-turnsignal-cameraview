@@ -60,6 +60,16 @@ public class DiagnosticTimingWindowTest {
         assertEquals(5000L, result.get("window_ms"));
     }
 
+    @Test public void contextBelongsToSlowestSampleInsteadOfReportTime() {
+        DiagnosticLogPolicy.configure(true);
+        DiagnosticTimingWindow timing = new DiagnosticTimingWindow("work_us", "cpu_us");
+        timing.recordContext(0, new Object[]{"fid", 10, "sequence", 1}, 500, 3);
+        Map<String, Object> report = fields(timing.recordContext(5000, new Object[]{"fid", 11, "sequence", 2}, 20, 15));
+        assertEquals(10, report.get("fid_at_slowest"));
+        assertEquals(1, report.get("sequence_at_slowest"));
+        assertEquals(3L, report.get("cpu_us_at_slowest"));
+    }
+
     private static Map<String, Object> fields(Object[] values) {
         assertNotNull(values);
         Map<String, Object> result = new HashMap<>();

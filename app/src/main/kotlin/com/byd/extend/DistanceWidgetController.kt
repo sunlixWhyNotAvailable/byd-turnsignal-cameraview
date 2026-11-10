@@ -30,8 +30,9 @@ class DistanceWidgetController internal constructor(
     private var radar: ParkingRadarRuntime? = null
     private var radarPackets: LatestValueDispatcher<ParkingRadarState.Snapshot>? = null
     private var radarEpoch = 0L
-    private var lastDiagnostic = ""
-    private var diagnosticRevision = -1L
+    private val diagnosticSampler = DistanceDiagnosticSampler()
+    private val publishTiming = DiagnosticTimingWindow("work_us", "cpu_us", "view_us", "preview_us", "diagnostic_submit_us")
+    private val pendingDiagnostic = Runnable { if (!stopped) publishDiagnostic() }
     private var displayManager: android.hardware.display.DisplayManager? = null
     private var displayCached = false
     private var cachedTarget: DistanceTarget? = null
@@ -117,21 +118,31 @@ class DistanceWidgetController internal constructor(
         publishFrame()
     }
     private fun publishFrame() {
+        val measure = publishTiming.enabled()
+        val start = if (measure) SystemClock.elapsedRealtimeNanos() else 0L
+        val cpu = if (measure) android.os.Debug.threadCpuTimeNanos() else 0L
         val now = SystemClock.elapsedRealtime()
         frame = if (needed) sources.frame(now) else DistanceFrame.unavailable(frame.generation, now, "inactive")
-        if (DiagnosticLogPolicy.extended()) {
-            val snapshot = sources.radar()
-            val signature = listOf(frame.distances().contentToString(), frame.radarMask, frame.status,
-                sources.adas().distances().contentToString(), sources.adas().status, snapshot.raw().contentToString(),
-                snapshot.present().contentToString(), snapshot.status(0), snapshot.status(1),
-                frame.generation, snapshot.generation(0), snapshot.generation(1)).joinToString("|")
-            if (signature != lastDiagnostic || diagnosticRevision != DiagnosticLogPolicy.revision()) {
-                event.accept("distance_sources_detail", sources.diagnostic(frame))
-                lastDiagnostic = signature; diagnosticRevision = DiagnosticLogPolicy.revision()
-            }
-        }
-        if (appVisible && preview) publishPreview()
         render()
+        val rendered = if (measure) SystemClock.elapsedRealtimeNanos() else 0L
+        if (appVisible && preview) publishPreview()
+        val published = if (measure) SystemClock.elapsedRealtimeNanos() else 0L
+        publishDiagnostic()
+        if (measure) publishTiming.record(SystemClock.elapsedRealtime(),
+            (SystemClock.elapsedRealtimeNanos() - start) / 1000,
+            (android.os.Debug.threadCpuTimeNanos() - cpu) / 1000,
+            (rendered - start) / 1000, (published - rendered) / 1000,
+            (SystemClock.elapsedRealtimeNanos() - published) / 1000)?.let {
+                event.accept("distance_publish_metrics", it)
+            }
+    }
+    private fun publishDiagnostic() {
+        handler.removeCallbacks(pendingDiagnostic)
+        when (val delay = diagnosticSampler.delay(SystemClock.elapsedRealtime(), frame, sources.adas(), sources.radar())) {
+            -1L -> Unit
+            0L -> event.accept("distance_sources_detail", sources.diagnostic(frame))
+            else -> if (needed) handler.postDelayed(pendingDiagnostic, delay)
+        }
     }
     private fun publishPreview() {
         previewSink.accept(DistanceFrameCodec.encode(frame))
@@ -213,6 +224,7 @@ class DistanceWidgetController internal constructor(
         source.control {
             if (stopped) return@control
             stopped = true
+            handler.removeCallbacks(pendingDiagnostic)
             needed = false; ++radarEpoch; radarPackets?.clear()
             radar?.stop(); radar = null; sources.clear()
             radarThread?.quitSafely(); radarThread = null

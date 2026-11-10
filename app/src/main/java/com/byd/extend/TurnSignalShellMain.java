@@ -130,7 +130,7 @@ public final class TurnSignalShellMain {
         private final Runnable wakeCheckRunnable = this::checkDeferredRecovery;
         private final AwakeSessionState awakeSession;
         private final Object guardEventLock = new Object();
-        private final ArrayDeque<String> pendingGuardEvents = new ArrayDeque<>();
+        private final ArrayDeque<DiagnosticEvent> pendingGuardEvents = new ArrayDeque<>();
         private final CountDownLatch guardRuntimeStopped = new CountDownLatch(1);
         private boolean guardEventDrainPosted;
         private volatile boolean guardEventsClosed;
@@ -152,6 +152,7 @@ public final class TurnSignalShellMain {
         private boolean nonAvasStopped;
         private boolean guardDetachPending;
         private volatile CameraRuntimeHost cameraRuntime;
+        private final AsyncServiceLog diagnosticEvents = new AsyncServiceLog(this::forwardEventLine, null);
         private volatile boolean appMotionTelemetry;
         private volatile boolean workerMotionTelemetry;
 
@@ -263,7 +264,7 @@ public final class TurnSignalShellMain {
                                         DiagnosticLogPolicy.print(line);
                                         scheduleStdoutFlush();
                                     }
-                                }, this::platformSignal);
+                                }, this::platformSignal, this::flushDiagnostics);
                         if (created && avasRuntime != null)
                             cameraRuntime.seedCameraPowerState(avasRuntime.cameraPowerStateSnapshot());
                         cameras = cameraRuntime;
@@ -712,7 +713,8 @@ public final class TurnSignalShellMain {
                 if (processTerminationRequested) return;
                 processTerminationRequested = true;
             }
-            processTerminator.run();
+            Runnable finish = () -> diagnosticEvents.flush(() -> DiagnosticLogPolicy.flushOutput(processTerminator));
+            if (!handler.post(finish)) finish.run();
         }
 
         private AvasRuntime requireAvasRuntime() {
@@ -1002,9 +1004,8 @@ public final class TurnSignalShellMain {
 
         private void queueGuardEvent(String kind, Object[] fields) {
             if (guardEventsClosed || !DiagnosticLogPolicy.shouldProduce(kind)) return;
-            long wallTime = System.currentTimeMillis();
-            long elapsedTime = SystemClock.elapsedRealtime();
-            String line = guardEventLine(kind, fields, wallTime, elapsedTime);
+            DiagnosticEvent line = new DiagnosticEvent("shell_helper", kind, fields);
+            if (DiagnosticLogPolicy.diagnosticOnly(kind)) { diagnosticEvents.appendEvent(line); return; }
             boolean scheduleDrain = false;
             synchronized (guardEventLock) {
                 if (guardEventsClosed) return;
@@ -1021,91 +1022,15 @@ public final class TurnSignalShellMain {
             }
         }
 
-        private String guardEventLine(
-                String kind, Object[] fields, long wallTime, long elapsedTime) {
-            String wallTimeText = Long.toString(wallTime);
-            try {
-                wallTimeText = new SimpleDateFormat(
-                        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
-                        .format(new Date(wallTime));
-                JSONObject json = new JSONObject();
-                json.put("kind", kind);
-                json.put("source", "shell_helper");
-                json.put("wall_time", wallTimeText);
-                json.put("t_ms", elapsedTime);
-                for (int i = 0; i + 1 < fields.length; i += 2) {
-                    json.put(String.valueOf(fields[i]), fields[i + 1]);
-                }
-                return json.toString();
-            } catch (Throwable error) {
-                JSONObject originalFields = new JSONObject();
-                JSONObject fieldErrors = new JSONObject();
-                if (fields != null) for (int i = 0; i + 1 < fields.length; i += 2) {
-                    String name = guardEventFieldName(fields[i]);
-                    try {
-                        originalFields.put(name, fields[i + 1]);
-                    } catch (Throwable fieldError) {
-                        try {
-                            JSONObject detail = new JSONObject();
-                            detail.put("exception_class", fieldError.getClass().getName());
-                            detail.put("exception_message", fieldError.getMessage() == null
-                                    ? "" : fieldError.getMessage());
-                            detail.put("stack_trace",
-                                    android.util.Log.getStackTraceString(fieldError));
-                            fieldErrors.put(name, detail);
-                        } catch (Throwable ignored) {
-                            // The primary serialization failure below remains available.
-                        }
-                    }
-                }
-                try {
-                    JSONObject diagnostic = new JSONObject();
-                    diagnostic.put("kind", "shell_event_json_error");
-                    diagnostic.put("source", "shell_helper");
-                    diagnostic.put("wall_time", wallTimeText);
-                    diagnostic.put("t_ms", elapsedTime);
-                    diagnostic.put("operation", "serialize_guard_event");
-                    diagnostic.put("original_event", kind);
-                    diagnostic.put("field_count", fields == null ? -1 : fields.length / 2);
-                    diagnostic.put("fields", originalFields);
-                    diagnostic.put("field_serialization_errors", fieldErrors);
-                    diagnostic.put("exception_class", error.getClass().getName());
-                    diagnostic.put("exception_message",
-                            error.getMessage() == null ? "" : error.getMessage());
-                    diagnostic.put("stack_trace", android.util.Log.getStackTraceString(error));
-                    return diagnostic.toString();
-                } catch (Throwable fallbackError) {
-                    return "{\"kind\":\"shell_event_json_error\",\"source\":\"shell_helper\","
-                            + "\"wall_time\":" + JSONObject.quote(wallTimeText)
-                            + ",\"t_ms\":" + elapsedTime
-                            + ",\"operation\":\"serialize_guard_event\",\"original_event\":"
-                            + JSONObject.quote(kind) + ",\"exception_class\":"
-                            + JSONObject.quote(error.getClass().getName())
-                            + ",\"exception_message\":" + JSONObject.quote(
-                                    error.getMessage() == null ? "" : error.getMessage())
-                            + ",\"stack_trace\":" + JSONObject.quote(
-                                    android.util.Log.getStackTraceString(error))
-                            + ",\"fallback_exception_class\":"
-                            + JSONObject.quote(fallbackError.getClass().getName())
-                            + ",\"fallback_exception_message\":" + JSONObject.quote(
-                                    fallbackError.getMessage() == null
-                                            ? "" : fallbackError.getMessage())
-                            + ",\"fallback_stack_trace\":" + JSONObject.quote(
-                                    android.util.Log.getStackTraceString(fallbackError)) + "}";
-                }
-            }
-        }
-
-        private static String guardEventFieldName(Object value) {
-            try {
-                return String.valueOf(value);
-            } catch (Throwable error) {
-                return value == null ? "null" : value.getClass().getName();
-            }
+        private void flushDiagnostics(Runnable completion) {
+            guardHandler.post(() -> handler.post(() -> {
+                drainPendingGuardEvents();
+                diagnosticEvents.flush(completion);
+            }));
         }
 
         private void drainGuardEvents() {
-            String line;
+            DiagnosticEvent line;
             synchronized (guardEventLock) {
                 line = pendingGuardEvents.pollFirst();
                 if (line == null) {
@@ -1113,7 +1038,7 @@ public final class TurnSignalShellMain {
                     return;
                 }
             }
-            forwardEventLine(line);
+            forwardEventLine(line.line());
 
             boolean scheduleDrain;
             synchronized (guardEventLock) {
@@ -1129,7 +1054,7 @@ public final class TurnSignalShellMain {
 
         private void drainPendingGuardEvents() {
             while (true) {
-                String line;
+                DiagnosticEvent line;
                 synchronized (guardEventLock) {
                     line = pendingGuardEvents.pollFirst();
                     if (line == null) {
@@ -1137,13 +1062,13 @@ public final class TurnSignalShellMain {
                         return;
                     }
                 }
-                forwardEventLine(line);
+                forwardEventLine(line.line());
             }
         }
 
         private void closeAndDrainGuardEvents() {
             while (true) {
-                String line;
+                DiagnosticEvent line;
                 synchronized (guardEventLock) {
                     line = pendingGuardEvents.pollFirst();
                     if (line == null) {
@@ -1152,7 +1077,7 @@ public final class TurnSignalShellMain {
                         return;
                     }
                 }
-                forwardEventLine(line);
+                forwardEventLine(line.line());
             }
         }
 
@@ -1436,22 +1361,9 @@ public final class TurnSignalShellMain {
 
         private void emit(String kind, Object... fields) {
             if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
-            String line;
-            try {
-                JSONObject json = new JSONObject();
-                json.put("kind", kind);
-                json.put("source", "shell_helper");
-                json.put("wall_time", new SimpleDateFormat(
-                        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(new Date()));
-                json.put("t_ms", SystemClock.elapsedRealtime());
-                for (int i = 0; i + 1 < fields.length; i += 2) {
-                    json.put(String.valueOf(fields[i]), fields[i + 1]);
-                }
-                line = json.toString();
-            } catch (Throwable error) {
-                line = "{\"kind\":\"shell_json_error\"}";
-            }
-            forwardEventLine(line);
+            DiagnosticEvent event = new DiagnosticEvent("shell_helper", kind, fields);
+            if (DiagnosticLogPolicy.diagnosticOnly(kind)) diagnosticEvents.appendEvent(event);
+            else handler.post(() -> forwardEventLine(event.line()));
         }
 
         private void forwardAvasEvent(JSONObject event) {
@@ -1541,8 +1453,7 @@ public final class TurnSignalShellMain {
     }
 
     private static void terminateProcess() {
-        DiagnosticLogPolicy.flushOutput();
-        Process.killProcess(Process.myPid());
+        DiagnosticLogPolicy.flushOutput(() -> Process.killProcess(Process.myPid()));
     }
 
     private static String summary(Throwable error) {

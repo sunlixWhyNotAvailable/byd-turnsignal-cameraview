@@ -154,17 +154,39 @@ final class TurnSignalTelemetryController implements AutoCloseable {
     boolean reconciliationPending() { return reconciliation.pending(); }
 
     TurnSignalTelemetryHistory.Operation beginOperation(String name, long queued) {
-        return history.started(name, queued, clock.now(), android.os.Debug.threadCpuTimeNanos());
+        TurnSignalTelemetryHistory.Operation result = history.started(name, queued, clock.now(), android.os.Debug.threadCpuTimeNanos());
+        result.trace = CriticalOperationTrace.begin(name, this::reportDiagnostic, "queued_ms", queued);
+        return result;
     }
 
     void endOperation(TurnSignalTelemetryHistory.Operation operation) {
         history.finished(operation, clock.now(), android.os.Debug.threadCpuTimeNanos());
+        CriticalOperationTrace.end(operation.trace);
+        if ("GET".equals(operation.name) && getTiming.enabled()) {
+            Object[] report = getTiming.recordContext(clock.now(), new Object[]{"due_ms", operation.queued, "started_ms", operation.started},
+                    operation.finished-operation.started, operation.started-operation.queued, operation.cpuNs/1000);
+            if (report != null) reportDiagnostic("telemetry_get_metrics", report);
+        }
     }
 
     String confirmationEvidence() {
         long now = clock.now();
         return DiagnosticLogPolicy.extended() ? history.snapshot(now, metrics(now).getAgeMs)
                 : history.blinkEvidence(now);
+    }
+
+    private final DiagnosticTimingWindow applyTiming = new DiagnosticTimingWindow("apply_us", "cpu_us", "receipt_age_ms");
+    private final DiagnosticTimingWindow getTiming = new DiagnosticTimingWindow("get_ms", "queue_ms", "cpu_us");
+    private void publishSnapshot(Snapshot snapshot, Source source, int liveMask, boolean conflict, long observedMs) {
+        boolean measured = applyTiming.enabled();
+        long start = measured ? System.nanoTime() : 0, cpu = measured ? android.os.Debug.threadCpuTimeNanos() : 0;
+        CriticalOperationTrace.phase("telemetry_apply_snapshot");
+        try { sink.onSnapshot(snapshot, source, liveMask, conflict, observedMs); }
+        finally { if (measured) {
+            Object[] report = applyTiming.recordContext(clock.now(), new Object[]{"source", source.name(), "observed_ms", observedMs},
+                    (System.nanoTime()-start)/1000, (android.os.Debug.threadCpuTimeNanos()-cpu)/1000, clock.now()-observedMs);
+            if (report != null) reportDiagnostic("telemetry_apply_metrics", report);
+        } }
     }
 
     private void expireReconciliation(long now) {
@@ -174,7 +196,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         reportDiagnostic("turn_telemetry_reconcile_expired", "pending_mask", reconciliation.mask(),
                 "deadline_ms", reconciliation.deadline(), "diagnostic_snapshot", history.snapshot(now, metrics(now).getAgeMs));
         reconciliation.clear();
-        sink.onSnapshot(snapshot(), Source.RECONCILE, 0, true, now);
+        publishSnapshot(snapshot(), Source.RECONCILE, 0, true, now);
     }
 
     boolean dataFresh(long now) {
@@ -214,11 +236,11 @@ final class TurnSignalTelemetryController implements AutoCloseable {
                     history.received(device, fid, value, receivedMs, listenerGeneration, sequence);
                     safeDispatch(() -> applyCallback(listenerGeneration, listenerArrivals,
                             device, fid, value, receivedMs, sequence),
-                            "CALLBACK", device, fid, receivedMs);
+                            "CALLBACK", device, fid, receivedMs, sequence);
                 }
                 @Override public void onError(String error, long receivedMs) {
                     safeDispatch(() -> subscriptionFailed(listenerGeneration, error, receivedMs),
-                            "CALLBACK_ERROR", -1, -1, receivedMs);
+                            "CALLBACK_ERROR", -1, -1, receivedMs, -1);
                 }
             });
             if (!active || listenerGeneration != generation) {
@@ -274,7 +296,8 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         if (!snapshot.valid()) return;
         boolean first = !seeded;
         seeded = true;
-        sink.onSnapshot(snapshot, first ? Source.INITIAL : Source.CALLBACK,
+        CriticalOperationTrace.phase("telemetry_apply_snapshot");
+        publishSnapshot(snapshot, first ? Source.INITIAL : Source.CALLBACK,
                 first ? 0 : liveMask(device, fid), false, receivedMs);
         if (first) sink.onMode(true, true, "valid_callback_seed");
     }
@@ -434,7 +457,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         if (seeded && !all(apply)) {
             // The raced field belongs to its newer callback. Only non-racing stalk/blink changes
             // make control history ambiguous; numeric steering/speed updates remain state only.
-            if (controlMismatch) sink.onSnapshot(combined, Source.RECONCILE, 0, unsafeBlink, now);
+            if (controlMismatch) publishSnapshot(combined, Source.RECONCILE, 0, unsafeBlink, now);
             return;
         }
         boolean conflict = controlMismatch && unsafeBlink;
@@ -444,7 +467,7 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         Source delivered = first
                 ? (subscribed ? source : Source.INITIAL)
                 : source;
-        sink.onSnapshot(combined, delivered, 0, conflict, now);
+        publishSnapshot(combined, delivered, 0, conflict, now);
         if (first) sink.onMode(subscribed, subscribed, "valid_get_seed");
     }
 
@@ -482,11 +505,23 @@ final class TurnSignalTelemetryController implements AutoCloseable {
         if (old != null) old.close();
     }
 
+    private final DiagnosticTimingWindow dispatchTiming = new DiagnosticTimingWindow("work_ms", "queue_ms", "cpu_us");
+
     private void safeDispatch(Runnable task, String operation,
-            int device, int fid, long receivedMs) {
+            int device, int fid, long receivedMs, long sequence) {
         try { dispatcher.execute(() -> {
             TurnSignalTelemetryHistory.Operation work = beginOperation(operation, receivedMs);
-            try { task.run(); } finally { endOperation(work); }
+            CriticalOperationTrace trace = CriticalOperationTrace.begin(operation, this::reportDiagnostic,
+                    "device", device, "fid", fid, "sequence", sequence, "received_ms", receivedMs);
+            try { task.run(); } finally {
+                CriticalOperationTrace.end(trace); endOperation(work);
+                if (dispatchTiming.enabled()) {
+                    Object[] report = dispatchTiming.recordContext(clock.now(), new Object[]{"fid", fid,
+                            "sequence", sequence, "received_ms", receivedMs, "started_ms", work.started},
+                            work.finished-work.started, work.started-receivedMs, work.cpuNs/1000);
+                    if (report != null) reportDiagnostic("telemetry_dispatch_metrics", report);
+                }
+            }
         }); }
         catch (RuntimeException failure) {
             long dispatchAge = elapsed(clock.now(), receivedMs);

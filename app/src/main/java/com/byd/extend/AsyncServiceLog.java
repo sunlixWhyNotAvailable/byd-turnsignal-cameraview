@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 /** Bounded non-blocking submission; a single drain owns all file I/O. */
 final class AsyncServiceLog {
@@ -13,6 +14,8 @@ final class AsyncServiceLog {
     // Detail traffic may use at most 75% of each limit, including in-flight records.
     static final int ESSENTIAL_RESERVE_BYTES = MAX_BYTES / 4, ESSENTIAL_RESERVE_RECORDS = MAX_RECORDS / 4;
     private final Supplier<File> fileFactory;
+    private final Consumer<String> sink;
+    private final Runnable sinkFlush;
     private final long flushDelayMs;
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "service-log-io"); t.setDaemon(true); return t;
@@ -29,17 +32,26 @@ final class AsyncServiceLog {
     private ScheduledFuture<?> scheduledFlush;
     private final DiagnosticLogPolicy ioPolicy = new DiagnosticLogPolicy();
     private String pendingIoFailure;
+    private final DiagnosticTimingWindow timing = new DiagnosticTimingWindow("queue_age_ms", "serialize_us", "write_us", "records", "bytes");
 
     private static final class Entry {
         final String line;
+        final DiagnosticEvent event;
         final int bytes;
         final boolean detail;
         final Runnable barrier;
         final long enqueuedAt = elapsedMs();
+        final long revision = DiagnosticLogPolicy.revision();
         Entry(String line, boolean detail, Runnable barrier) {
             this.line = line; this.detail = detail; this.barrier = barrier;
+            event = null;
             bytes = line == null ? 0 : line.getBytes(StandardCharsets.UTF_8).length + 1;
         }
+        Entry(DiagnosticEvent event) {
+            this.event = event; line = null; barrier = null;
+            detail = DiagnosticLogPolicy.isDetail(event.kind); bytes = event.estimatedBytes;
+        }
+        boolean record() { return line != null || event != null; }
     }
     private static long elapsedMs() { return System.nanoTime() / 1_000_000L; }
 
@@ -73,14 +85,20 @@ final class AsyncServiceLog {
     AsyncServiceLog(Supplier<File> fileFactory, long flushDelayMs) {
         if (fileFactory == null) throw new IllegalArgumentException("fileFactory is null");
         this.fileFactory = fileFactory; this.flushDelayMs = Math.max(0L, flushDelayMs);
+        sink = null; sinkFlush = null;
+    }
+    AsyncServiceLog(Consumer<String> sink, Runnable flush) {
+        this.sink = java.util.Objects.requireNonNull(sink); sinkFlush = flush;
+        fileFactory = null; flushDelayMs = 250;
+    }
+    synchronized void appendEvent(DiagnosticEvent event) {
+        if (accepting && DiagnosticLogPolicy.shouldPersist(event.kind)) enqueue(new Entry(event));
     }
     synchronized void appendRaw(String line) {
         if (!accepting || line == null) return;
         String kind = DiagnosticLogPolicy.kind(line);
         if (!DiagnosticLogPolicy.shouldPersist(kind)) return;
-        String summary = policy.before(line, kind, System.nanoTime() / 1_000_000L);
-        if (summary != null) enqueue(new Entry(summary, false, null));
-        if (!policy.suppressed()) enqueue(new Entry(line, DiagnosticLogPolicy.isDetail(kind), null));
+        enqueue(new Entry(line, DiagnosticLogPolicy.isDetail(kind), null));
     }
     void appendLifecycle(String kind, long elapsedMs, Object... fields) {
         if (!DiagnosticLogPolicy.shouldPersist(kind)) return;
@@ -88,12 +106,12 @@ final class AsyncServiceLog {
             JSONObject event = new JSONObject().put("kind", kind)
                     .put("source", "helper_service").put("t_ms", elapsedMs);
             for (int i = 0; fields != null && i + 1 < fields.length; i += 2)
-                event.put(String.valueOf(fields[i]), fields[i + 1]);
+                event.put(String.valueOf(fields[i]), JSONObject.wrap(fields[i + 1]));
             appendRaw(event.toString());
         } catch (Throwable ignored) { }
     }
     private void enqueue(Entry entry) {
-        if (entry.line != null) {
+        if (entry.record()) {
             // Batch size is a drain target, not a record-size limit. Never fragment JSON.
             int recordBudget = entry.detail ? MAX_BYTES - ESSENTIAL_RESERVE_BYTES : MAX_BYTES;
             if (entry.bytes > recordBudget) {
@@ -102,7 +120,7 @@ final class AsyncServiceLog {
             Iterator<Entry> candidates = queue.iterator();
             while (!fits(entry) && candidates.hasNext()) {
                 Entry old = candidates.next();
-                if (old.line != null && old.detail) {
+                if (old.record() && old.detail) {
                     candidates.remove(); release(old); recordLoss(old, "capacity");
                 }
             }
@@ -140,14 +158,10 @@ final class AsyncServiceLog {
             else complete(completion);
             return;
         }
-        String summary = policy.finish();
-        if (summary != null) enqueue(new Entry(summary, false, null));
         enqueue(new Entry(null, false, completion == null ? () -> { } : completion));
     }
     synchronized void close() {
         if (!accepting) return;
-        String summary = policy.finish();
-        if (summary != null) enqueue(new Entry(summary, false, null));
         accepting = false; scheduleDrain();
     }
     private void drain() {
@@ -173,7 +187,7 @@ final class AsyncServiceLog {
                 if (batch.isEmpty() && lost == null) draining = false;
             }
             if (batch.isEmpty() && lost == null) {
-                if (closing) { cancelScheduledFlush(); closeWriter(); worker.shutdown(); }
+                if (closing) { finishPolicy(); cancelScheduledFlush(); flushOnWorker(); closeWriter(); worker.shutdown(); }
                 return;
             }
             // Counters include the in-flight batch until I/O completes. No I/O under the lock.
@@ -185,13 +199,30 @@ final class AsyncServiceLog {
                 failed = true;
             }
             for (Entry entry : batch) {
-                if (entry.barrier != null) { cancelScheduledFlush(); flushOnWorker(); complete(entry.barrier); }
+                if (entry.barrier != null) { finishPolicy(); cancelScheduledFlush(); flushOnWorker(); complete(entry.barrier); }
                 else {
-                    if (!write(entry.line)) {
+                    boolean discard = entry.detail && (!DiagnosticLogPolicy.extended()
+                            || entry.revision != DiagnosticLogPolicy.revision());
+                    long begin = timing.enabled() ? System.nanoTime() : 0;
+                    String line = discard ? null : entry.event == null ? entry.line : entry.event.line();
+                    long formatted = begin == 0 ? 0 : System.nanoTime();
+                    boolean written = true;
+                    if (line != null) {
+                        String summary = policy.before(line, DiagnosticLogPolicy.kind(line), elapsedMs());
+                        if (summary != null) written = write(summary);
+                        if (!policy.suppressed()) written &= write(line);
+                    }
+                    if (!written) {
                         synchronized (this) { recordLoss(entry, "write_failure"); }
                         failed = true;
                     }
-                    synchronized (this) { release(entry); }
+                    int records, bytes;
+                    synchronized (this) { release(entry); records = bufferedRecords; bytes = bufferedBytes; }
+                    if (begin != 0) {
+                        Object[] metrics = timing.record(elapsedMs(), elapsedMs() - entry.enqueuedAt,
+                                (formatted - begin) / 1000, (System.nanoTime() - formatted) / 1000, records, bytes);
+                        if (metrics != null) write(new DiagnosticEvent("journal", "diagnostic_writer_metrics", metrics).line());
+                    }
                 }
             }
             if (failed) {
@@ -207,6 +238,13 @@ final class AsyncServiceLog {
     }
     private boolean write(String line) {
         try {
+            if (sink != null) {
+                if (pendingIoFailure != null) { sink.accept(pendingIoFailure); pendingIoFailure = null; }
+                sink.accept(line);
+                if (scheduledFlush == null || scheduledFlush.isDone())
+                    scheduledFlush = worker.schedule(this::flushOnWorker, flushDelayMs, TimeUnit.MILLISECONDS);
+                return true;
+            }
             ensureWriter();
             if (pendingIoFailure != null) {
                 writer.write(pendingIoFailure); writer.newLine();
@@ -218,6 +256,7 @@ final class AsyncServiceLog {
             return true;
         } catch (Throwable failure) { closeWriter(failure); reportIoFailure("write", failure); return false; }
     }
+    private void finishPolicy() { String summary = policy.finish(); if (summary != null) write(summary); }
     private static void complete(Runnable completion) {
         try { if (completion != null) completion.run(); } catch (Throwable ignored) { }
     }
@@ -233,6 +272,11 @@ final class AsyncServiceLog {
     }
     private void flushOnWorker() {
         scheduledFlush = null;
+        if (sink != null) {
+            try { if (sinkFlush != null) sinkFlush.run(); }
+            catch (Throwable failure) { reportIoFailure("flush", failure); }
+            return;
+        }
         if (writer == null) return;
         try { writer.flush(); }
         catch (Throwable failure) { closeWriter(failure); reportIoFailure("flush", failure); }

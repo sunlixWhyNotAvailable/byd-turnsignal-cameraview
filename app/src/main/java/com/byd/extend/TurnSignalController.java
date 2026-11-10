@@ -55,6 +55,8 @@ final class TurnSignalController {
     private final AvasAudioLibrary avasLibrary;
     private final String apkMarker;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService reverseHideWorker = Executors.newSingleThreadExecutor(r -> new Thread(r, "reverse-hide"));
+    private volatile int closingReverseRequestId;
     private java.util.concurrent.CompletableFuture<LocalAdbClient.Result> cameraLaunch, avmLaunch;
     private boolean cameraLaunchReplacement, avmLaunchReplacement;
     private volatile boolean terminatePendingLaunches;
@@ -249,6 +251,7 @@ final class TurnSignalController {
             // The worker may already be draining after a repeated shutdown call.
         }
         worker.shutdown();
+        reverseHideWorker.shutdown();
     }
 
     void setRecoveryEnabled(boolean enabled) {
@@ -1343,6 +1346,60 @@ final class TurnSignalController {
         }
     }
 
+    void hideReverseOverlays(int requestId, long expectedEpoch, int[] tablet, int[] cluster, Consumer<Boolean> completion) {
+        long requested = SystemClock.elapsedRealtime();
+        closingReverseRequestId = requestId;
+        invalidateReverseOverlayShows(requestId, "hide_requested");
+        IBinder value; long epoch;
+        synchronized (this) { value = cameraHelper; epoch = cameraHelperEpoch; }
+        int[] tabletCopy = tablet == null ? null : tablet.clone();
+        int[] clusterCopy = cluster == null ? null : cluster.clone();
+        long submitted = SystemClock.elapsedRealtime();
+        try {
+            reverseHideWorker.execute(() -> {
+                long started = SystemClock.elapsedRealtime();
+                CriticalOperationTrace trace = CriticalOperationTrace.begin("reverse_hide_binder", this::emit,
+                        "request_id", requestId, "helper_epoch", epoch, "expected_epoch", expectedEpoch, "submitted_ms", submitted);
+                boolean success = false;
+                Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+                try {
+                    synchronized (this) {
+                        if (stopped || value == null || cameraHelper != value || cameraHelperEpoch != epoch
+                                || expectedEpoch > 0 && expectedEpoch != epoch)
+                            throw new IllegalStateException("reverse hide helper attachment expired");
+                    }
+                    data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+                    data.writeInt(requestId); data.writeLong(epoch);
+                    data.writeInt((tabletCopy == null ? 0 : 1) + (clusterCopy == null ? 0 : 1));
+                    for (int target = 0; target < 2; target++) {
+                        int[] generations = target == CameraDisplayTarget.TABLET ? tabletCopy : clusterCopy;
+                        if (generations == null) continue;
+                        data.writeInt(target); data.writeInt(generations.length);
+                        for (int generation : generations) data.writeInt(generation);
+                    }
+                    requireTransact(value, CameraShellProtocol.TX_REVERSE_HIDE_BATCH, data, reply);
+                    success = true;
+                } catch (Throwable error) {
+                    emit("reverse_overlay_error", "stage", "hide_batch", "request_id", requestId,
+                            "camera_shell_epoch", epoch, "expected_epoch", expectedEpoch,
+                            "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
+                } finally {
+                    CriticalOperationTrace.end(trace);
+                    data.recycle(); reply.recycle();
+                    if (DiagnosticLogPolicy.extended()) emit("reverse_phase_detail", "stage", "hide_batch",
+                            "request_id", requestId, "camera_shell_epoch", epoch,
+                            "requested_ms", requested, "submitted_ms", submitted, "started_ms", started,
+                            "pre_submit_ms", submitted-requested, "queue_ms", started-submitted,
+                            "run_ms", SystemClock.elapsedRealtime()-started, "success", success);
+                    postCompletion(completion, success, "reverse_hide_batch", requestId);
+                }
+            });
+        } catch (RejectedExecutionException failure) {
+            emit("reverse_overlay_error", "stage", "submit_hide_batch", "request_id", requestId, "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(failure));
+            postCompletion(completion, false, "reverse_hide_batch", requestId);
+        }
+    }
+
     void invalidateReverseOverlayShows(int requestId, String reason) {
         cancelReverseOverlayShows(requestId, -1, 0, reason);
     }
@@ -1702,7 +1759,7 @@ final class TurnSignalController {
         if (value == null || !value.isBinderAlive()) return;
         Runnable latest = () -> {
             synchronized (TurnSignalController.this) {
-                if (stopped || cameraHelper != value || cameraHelperEpoch != epoch) return;
+                if (stopped || closingReverseRequestId == requestId || cameraHelper != value || cameraHelperEpoch != epoch) return;
             }
             Parcel data = Parcel.obtain();
             Parcel reply = Parcel.obtain();

@@ -33,6 +33,7 @@ final class CameraFramePump {
     static final class Acquisition {
         long startedNs, producerTimestampNs, queueNs, preparationNs, updateNs;
         long copyNs, fenceNs, releaseNs, inputCycleNs;
+        long updateCpuNs, copyCpuNs, fenceCpuNs, releaseCpuNs;
         long policyRevision;
         int signals;
         boolean metricsEnabled, allocated, copied, invalidTimestamp, repeatedTimestamp;
@@ -41,6 +42,7 @@ final class CameraFramePump {
         void reset() {
             startedNs = producerTimestampNs = queueNs = preparationNs = updateNs = 0;
             copyNs = fenceNs = releaseNs = inputCycleNs = 0;
+            updateCpuNs = copyCpuNs = fenceCpuNs = releaseCpuNs = 0;
             policyRevision = 0L;
             signals = 0;
             metricsEnabled = allocated = copied = invalidTimestamp = repeatedTimestamp = false;
@@ -261,7 +263,14 @@ final class CameraFramePump {
         }
     }
 
+    private final DiagnosticTimingWindow phaseTiming = new DiagnosticTimingWindow("cycle_us", "update_us", "update_cpu_us",
+            "copy_us", "copy_cpu_us", "fence_us", "fence_cpu_us", "release_us", "release_cpu_us");
     private void capture() {
+        CriticalOperationTrace trace = CriticalOperationTrace.begin("camera_acquire", DiagnosticEvent::camera,
+                "source_index", index, "surface_identity", surface == null ? 0 : System.identityHashCode(surface));
+        try { captureFrame(); } finally { CriticalOperationTrace.end(trace); }
+    }
+    private void captureFrame() {
         long metricsRevision = DiagnosticLogPolicy.revision();
         boolean collectMetrics = DiagnosticLogPolicy.extended();
         if (collectMetrics && metricsRevision != DiagnosticLogPolicy.revision())
@@ -329,6 +338,8 @@ final class CameraFramePump {
                 sample.preparationNs = SystemClock.elapsedRealtimeNanos() - prepareStart;
         }
 
+        CriticalOperationTrace.phase("camera_update_tex_image");
+        long updateCpu = collectMetrics ? android.os.Debug.threadCpuTimeNanos() : 0;
         long updateStart = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
         boolean updated = false;
         boolean publish = false;
@@ -343,7 +354,8 @@ final class CameraFramePump {
             } catch (Throwable error) {
                 failure = appendFailure(failure, "update camera SurfaceTexture", error);
             }
-            if (collectMetrics) sample.updateNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+            if (collectMetrics) { sample.updateNs = SystemClock.elapsedRealtimeNanos() - updateStart;
+                sample.updateCpuNs = android.os.Debug.threadCpuTimeNanos() - updateCpu; }
 
             if (updated && failure == null) {
                 long acquired = System.nanoTime();
@@ -399,6 +411,8 @@ final class CameraFramePump {
                                 }
                             } else if (failure == null) {
                                 Frame frame = frames[slot];
+                                CriticalOperationTrace.phase("camera_copy");
+                                long copyCpu = collectMetrics ? android.os.Debug.threadCpuTimeNanos() : 0;
                                 long copyStart = collectMetrics
                                         ? SystemClock.elapsedRealtimeNanos() : 0L;
                                 try {
@@ -421,18 +435,22 @@ final class CameraFramePump {
                                     }
                                     if (collectMetrics) sample.copyNs =
                                             SystemClock.elapsedRealtimeNanos() - copyStart;
+                                    if (collectMetrics) sample.copyCpuNs = android.os.Debug.threadCpuTimeNanos() - copyCpu;
                                     frame.acquiredNs = acquired;
                                     frame.producerNs = timestamp;
                                 } catch (Throwable error) {
                                     failure = appendFailure(failure, "copy camera SurfaceTexture frame", error);
                                 }
                                 if (failure == null) {
+                                    CriticalOperationTrace.phase("camera_fence");
+                                    long fenceCpu = collectMetrics ? android.os.Debug.threadCpuTimeNanos() : 0;
                                     long fenceStart = collectMetrics
                                             ? SystemClock.elapsedRealtimeNanos() : 0L;
                                     try {
                                         frame.fence = finishUse();
                                         if (collectMetrics) sample.fenceNs =
                                                 SystemClock.elapsedRealtimeNanos() - fenceStart;
+                                        if (collectMetrics) sample.fenceCpuNs = android.os.Debug.threadCpuTimeNanos() - fenceCpu;
                                         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
                                         if (collectMetrics) sample.copied = true;
                                         publish = true;
@@ -447,6 +465,8 @@ final class CameraFramePump {
                 }
             }
         } finally {
+            CriticalOperationTrace.phase("camera_release_tex_image");
+            long releaseCpu = collectMetrics ? android.os.Debug.threadCpuTimeNanos() : 0;
             long releaseStart = collectMetrics ? SystemClock.elapsedRealtimeNanos() : 0L;
             try {
                 // An update may acquire input before throwing; GLConsumer supplies its release fence.
@@ -455,6 +475,7 @@ final class CameraFramePump {
                 failure = appendFailure(failure, "release camera SurfaceTexture image", error);
             } finally {
                 if (collectMetrics) {
+                    sample.releaseCpuNs = android.os.Debug.threadCpuTimeNanos() - releaseCpu;
                     sample.releaseNs = SystemClock.elapsedRealtimeNanos() - releaseStart;
                     sample.inputCycleNs = SystemClock.elapsedRealtimeNanos() - updateStart;
                 }
@@ -500,21 +521,10 @@ final class CameraFramePump {
         if (collectMetrics && reportMatrix && surface != null
                 && matrixLog.shouldReport(matrix, metricsRevision)) {
             try {
-                com.byd.extend.remote.CameraViewingDiagnostics.detail(
-                        "camera_texture_matrix", "camera", "{\"kind\":\"camera_texture_matrix\","
-                        + "\"source\":\"camera_frame_pump\",\"stage\":\"source_input\","
-                        + "\"source_index\":" + index + ",\"pid\":" + Process.myPid()
-                        + ",\"uid\":" + Process.myUid() + ",\"tid\":" + Process.myTid()
-                        + ",\"policy_revision\":" + metricsRevision
-                        + ",\"producer_timestamp_ns\":" + sample.producerTimestampNs
-                        + ",\"surface_identity\":"
-                        + System.identityHashCode(surface) + ",\"preview_index\":" + index
-                        + ",\"surface_texture_id\":" + System.identityHashCode(input)
-                        + ",\"source_width\":" + sourceWidth
-                        + ",\"source_height\":" + sourceHeight + ",\"output_width\":"
-                        + (int) (size >>> 32) + ",\"output_height\":" + (int) size
-                        + ",\"matrix\":" + Arrays.toString(matrix)
-                        + ",\"worker\":\"" + thread.getName() + "\"}");
+                DiagnosticEvent.camera("camera_texture_matrix", "stage", "source_input", "source_index", index,
+                        "producer_timestamp_ns", sample.producerTimestampNs, "surface_identity", System.identityHashCode(surface),
+                        "surface_texture_id", System.identityHashCode(input), "source_width", sourceWidth, "source_height", sourceHeight,
+                        "output_width", (int)(size >>> 32), "output_height", (int)size, "matrix", matrix, "worker", thread.getName());
             } catch (Throwable error) {
                 diagnosticFailure = appendFailure(diagnosticFailure,
                         "report camera texture matrix", error);
@@ -530,6 +540,15 @@ final class CameraFramePump {
         }
         try {
             listener.acquired(sample);
+            if (sample.metricsEnabled && sample.policyRevision == DiagnosticLogPolicy.revision()) {
+                Object[] report = phaseTiming.recordContext(SystemClock.elapsedRealtime(), new Object[]{
+                        "source_index", index, "producer_timestamp_ns", sample.producerTimestampNs,
+                        "surface_identity", surface == null ? 0 : System.identityHashCode(surface)},
+                        sample.inputCycleNs/1000, sample.updateNs/1000, sample.updateCpuNs/1000,
+                        sample.copyNs/1000, sample.copyCpuNs/1000, sample.fenceNs/1000, sample.fenceCpuNs/1000,
+                        sample.releaseNs/1000, sample.releaseCpuNs/1000);
+                if (report != null) DiagnosticEvent.camera("camera_acquisition_phases", report);
+            }
         } catch (Throwable error) {
             diagnosticFailure = appendFailure(diagnosticFailure,
                     "report camera acquisition metrics", error);
@@ -640,15 +659,10 @@ final class CameraFramePump {
         if (surface == null || (reportedSourceWidth == sourceWidth
                 && reportedSourceHeight == sourceHeight
                 && reportedOutputWidth == outputWidth && reportedOutputHeight == outputHeight)) return;
-        Log.i("BydCameraProbe", "{\"kind\":\"camera_source_format\","
-                + "\"source\":\"direct_camera_source_hub\",\"stage\":\"avm_source\","
-                + "\"source_index\":" + index + ",\"pid\":" + Process.myPid()
-                + ",\"tid\":" + Process.myTid() + ",\"surface_identity\":"
-                + System.identityHashCode(surface) + ",\"surface_texture_id\":"
-                + System.identityHashCode(input) + ",\"source_width\":" + sourceWidth
-                + ",\"source_height\":" + sourceHeight + ",\"output_width\":" + outputWidth
-                + ",\"output_height\":" + outputHeight + ",\"worker\":\""
-                + thread.getName() + "\"}");
+        DiagnosticEvent.camera("camera_source_format", "stage", "avm_source", "source_index", index,
+                "surface_identity", System.identityHashCode(surface), "surface_texture_id", System.identityHashCode(input),
+                "source_width", sourceWidth, "source_height", sourceHeight, "output_width", outputWidth,
+                "output_height", outputHeight, "worker", thread.getName());
         reportedSourceWidth = sourceWidth;
         reportedSourceHeight = sourceHeight;
         reportedOutputWidth = outputWidth;
@@ -669,7 +683,8 @@ final class CameraFramePump {
         } catch (Throwable listenerError) {
             error.addSuppressed(new IllegalStateException("report camera acquisition failure failed",
                     listenerError));
-            Log.e("BydCameraProbe", "camera acquisition failure handler failed", error);
+            DiagnosticEvent.camera("camera_acquisition_failure_handler_failed", "error",
+                    com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
         }
     }
 

@@ -991,6 +991,8 @@ final class ReverseCameraController {
     }
 
     private void stop(String reason, boolean retryAfter, boolean preserveDirection) {
+        long stopStarted = DiagnosticLogPolicy.extended() ? SystemClock.elapsedRealtime() : 0;
+        long metricsRevision = DiagnosticLogPolicy.revision();
         cancelManualNative("stop:" + reason);
         if (stopping) return;
         cancelTimers();
@@ -1002,10 +1004,6 @@ final class ReverseCameraController {
         int[] closingGenerations = generations;
         int[] closingClusterGenerations = clusterGenerations;
         int[] closingDisplayTargets = preparedDisplayTargets;
-        // A show may still be queued: queue its hide before detaching camera surfaces.
-        boolean wasVisible = visible || shownGenerations.get(CameraDisplayTarget.TABLET) != null;
-        boolean wasClusterVisible = clusterVisible
-                || shownGenerations.get(CameraDisplayTarget.CLUSTER) != null;
         shownGenerations.clear();
         if (preserveDirection) direction.rememberForRetry();
         else direction.reset();
@@ -1022,11 +1020,19 @@ final class ReverseCameraController {
         CleanupCloseCoordinator cleanup = new CleanupCloseCoordinator(
                 closingRequestId,
                 candidate -> !shutdown && stopping && activeCleanup == candidate,
-                requestId -> activeHelper == null
-                        || activeHelper.closeReverseCamera(reason, requestId),
+                requestId -> {
+                    long start = DiagnosticLogPolicy.extended() ? SystemClock.elapsedRealtime() : 0;
+                    try { return activeHelper == null || activeHelper.closeReverseCamera(reason, requestId); }
+                    finally { stopPhase("camera_cleanup", requestId, start, metricsRevision); }
+                },
                 closed -> {
-                    if (activeHelper == null) closed.accept(true);
-                    else activeHelper.closeReverseOverlayWindow(reason, closed);
+                    long start = DiagnosticLogPolicy.extended() ? SystemClock.elapsedRealtime() : 0;
+                    Consumer<Boolean> complete = value -> {
+                        stopPhase("window_cleanup", closingRequestId, start, metricsRevision);
+                        closed.accept(value);
+                    };
+                    if (activeHelper == null) complete.accept(true);
+                    else activeHelper.closeReverseOverlayWindow(reason, complete);
                 },
                 this::scheduleCleanupRetry,
                 this::clearCleanupRetry,
@@ -1038,49 +1044,28 @@ final class ReverseCameraController {
                         "request_id", closingRequestId, "error", summary(error)),
                 error -> emit("reverse_camera_error", "stage", "queue_close",
                         "error", summary(error)),
-                state -> finishStop(reason, retryAfter, state));
+                state -> {
+                    stopPhase("stop_complete", closingRequestId, stopStarted, metricsRevision);
+                    finishStop(reason, retryAfter, state);
+                });
         activeCleanup = cleanup;
-        Runnable closeCamera = cleanup::startCameraThenWindow;
-        Runnable hideTabletOrClose = () -> {
-            if (activeHelper == null || !wasVisible
-                    || !isValidGenerationSet(closingGenerations)) {
-                closeCamera.run();
-                return;
-            }
-            try {
-                activeHelper.setReverseOverlayVisible(
-                        closingRequestId, CameraDisplayTarget.TABLET,
-                        closingGenerations, false,
-                        hidden -> {
-                            if (hidden) closeCamera.run();
-                            else cleanup.startWindowThenCamera();
-                        });
-            } catch (Throwable error) {
-                emit("reverse_camera_error", "stage", "queue_hide_tablet",
-                        "error", summary(error));
-                cleanup.startWindowThenCamera();
-            }
-        };
-        if (activeHelper != null && wasClusterVisible
-                && hasPreparedDisplayTarget(
-                        CameraDisplayTarget.CLUSTER, closingDisplayTargets)
-                && isValidGenerationSet(closingClusterGenerations)) {
-            try {
-                activeHelper.setReverseOverlayVisible(
-                        closingRequestId, CameraDisplayTarget.CLUSTER,
-                        closingClusterGenerations, false,
-                        hidden -> {
-                            if (hidden) hideTabletOrClose.run();
-                            else cleanup.startWindowThenCamera();
-                        });
-            } catch (Throwable error) {
-                emit("reverse_camera_error", "stage", "queue_hide_cluster",
-                        "error", summary(error));
-                cleanup.startWindowThenCamera();
-            }
-        } else {
-            hideTabletOrClose.run();
+        if (activeHelper == null) { cleanup.startCameraThenWindow(); return; }
+        try {
+            stopPhase("hide_pre_submit", closingRequestId, stopStarted, metricsRevision);
+            activeHelper.hideReverseOverlays(closingRequestId, outputHelperEpoch, outputSurfaces,
+                    hasPreparedDisplayTarget(CameraDisplayTarget.TABLET, closingDisplayTargets) ? closingGenerations : null,
+                    hasPreparedDisplayTarget(CameraDisplayTarget.CLUSTER, closingDisplayTargets) ? closingClusterGenerations : null,
+                    hidden -> { if (hidden) cleanup.startCameraThenWindow(); else cleanup.startWindowThenCamera(); });
+        } catch (Throwable error) {
+            emit("reverse_camera_error", "stage", "queue_hide_batch", "request_id", closingRequestId, "error", summary(error));
+            cleanup.startWindowThenCamera();
         }
+    }
+
+    private void stopPhase(String stage, int requestId, long start, long revision) {
+        if (start != 0 && DiagnosticLogPolicy.extended() && revision == DiagnosticLogPolicy.revision())
+            emit("reverse_phase_detail", "stage", stage, "request_id", requestId,
+                    "started_ms", start, "elapsed_ms", SystemClock.elapsedRealtime() - start);
     }
 
     private void finishStop(

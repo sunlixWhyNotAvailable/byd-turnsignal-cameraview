@@ -257,6 +257,7 @@ final class DirectCameraSourceHub
                             surfaces[i], indexes[i], requestId, producerEpoch,
                             initialActive == null || initialActive[i], initialActive != null);
                     synchronized (targets) {
+                        target.quiesced |= isQuiesced(surfaces[i], requestId);
                         targets.put(surfaces[i], target);
                     }
                     attached.add(target);
@@ -382,6 +383,29 @@ final class DirectCameraSourceHub
             target.worker.setTargetActive(target, active);
             return null;
         });
+    }
+
+    private Surface[] quiescedSurfaces = new Surface[0];
+    private int quiescedRequestId;
+
+    /** Stop only this closing consumer's future draws; GL teardown stays on its owner. */
+    void quiesce(Surface[] surfaces, int requestId) {
+        synchronized (targets) {
+            quiescedSurfaces = surfaces.clone();
+            quiescedRequestId = requestId;
+            for (Surface surface : surfaces) {
+                Target target = targets.get(surface);
+                if (target != null && target.requestId == requestId) target.quiesced = true;
+            }
+        }
+    }
+
+    private boolean isQuiesced(Surface surface, int requestId) {
+        synchronized (targets) {
+            if (requestId != quiescedRequestId) return false;
+            for (Surface candidate : quiescedSurfaces) if (candidate == surface) return true;
+            return false;
+        }
     }
 
     @Override
@@ -521,14 +545,10 @@ final class DirectCameraSourceHub
         if (!acquireSwapFailureLog(nowNs)) return;
         long mappingToken = target.mapping == null || target.mapping.request == null
                 ? -1L : target.mapping.request.token;
-        Log.w(LOG_TAG, "{\"kind\":\"camera_gpu_swap_failure\",\"source_index\":"
-                + target.index + ",\"output_surface_id\":"
-                + System.identityHashCode(target.surface)
-                + ",\"request_id\":" + target.requestId
-                + ",\"producer_epoch\":" + target.producerEpoch
-                + ",\"mapping_token\":" + mappingToken
-                + ",\"retiring\":" + target.retiring
-                + ",\"egl_error\":" + eglError + "}");
+        DiagnosticEvent.camera("camera_gpu_swap_failure", "source_index", target.index,
+                "output_surface_id", System.identityHashCode(target.surface), "request_id", target.requestId,
+                "producer_epoch", target.producerEpoch, "mapping_token", mappingToken,
+                "retiring", target.retiring, "egl_error", eglError);
     }
 
     static String workerThreadName(int index) {
@@ -670,6 +690,7 @@ final class DirectCameraSourceHub
                 target.recording = recording;
                 if (recording != null) recording.retain();
                 target.active = initialActive;
+                target.quiesced = isQuiesced(value, requestId);
                 // Preserve the timestamps previously enabled by the post-attach activation call.
                 target.timestampFrames = activitySpecified && initialActive
                         || mapping != null && mapping.lifecycleOnly;
@@ -687,11 +708,9 @@ final class DirectCameraSourceHub
                     catch (Throwable cleanup) { error.addSuppressed(cleanup); }
                     throw error;
                 }
-                Log.i(LOG_TAG, "{\"kind\":\"camera_gpu_output_attached\",\"source_index\":"
-                        + targetIndex + ",\"request_id\":" + requestId
-                        + ",\"producer_epoch\":" + producerEpoch
-                        + ",\"fused\":" + isFusedTarget(target)
-                        + ",\"lifecycle_only\":" + isLifecycleOnlyTarget(target) + "}");
+                DiagnosticEvent.camera("camera_gpu_output_attached", "source_index", targetIndex,
+                        "request_id", requestId, "producer_epoch", producerEpoch,
+                        "fused", isFusedTarget(target), "lifecycle_only", isLifecycleOnlyTarget(target));
                 return target;
             });
         }
@@ -830,15 +849,14 @@ final class DirectCameraSourceHub
             try { pump.start(); }
             catch (Exception error) { throw new IllegalStateException("camera acquisition failed", error); }
             surface = pump.surface;
-            Log.i(LOG_TAG, "{\"kind\":\"camera_source_worker_started\","
-                    + "\"source_index\":" + index + ",\"worker\":\""
-                    + workerThreadName(index) + "\",\"gl_version\":" + glVersion + "}");
+            DiagnosticEvent.camera("camera_source_worker_started", "source_index", index,
+                    "worker", workerThreadName(index), "gl_version", glVersion);
         }
 
         private void refreshCaptureSize() {
             int width = 0, height = 0;
             for (Target target : targets) {
-                if (!target.active) continue;
+                if (!target.active || target.quiesced) continue;
                 width = Math.max(width, target.mapping == null
                         ? target.width : target.mapping.captureWidth);
                 height = Math.max(height, target.mapping == null
@@ -1019,6 +1037,22 @@ final class DirectCameraSourceHub
         }
 
         private void render() {
+            CriticalOperationTrace trace = CriticalOperationTrace.begin("camera_render_cycle", DiagnosticEvent::camera, "source_index", index);
+            try { renderFrame(); } finally { CriticalOperationTrace.end(trace); }
+        }
+        private final DiagnosticTimingWindow fenceTiming = new DiagnosticTimingWindow("wait_us", "cpu_us");
+        private void awaitFrame(int slot) {
+            CriticalOperationTrace.phase("camera_wait_read_fence");
+            boolean measured = fenceTiming.enabled();
+            long start = measured ? System.nanoTime() : 0, cpu = measured ? android.os.Debug.threadCpuTimeNanos() : 0;
+            try { pump.awaitRead(slot); }
+            finally { if (measured) {
+                Object[] report = fenceTiming.recordContext(SystemClock.elapsedRealtime(), new Object[]{"source_index", index, "slot", slot},
+                        (System.nanoTime()-start)/1000, (android.os.Debug.threadCpuTimeNanos()-cpu)/1000);
+                if (report != null) DiagnosticEvent.camera("camera_read_fence_metrics", report);
+            } }
+        }
+        private void renderFrame() {
             long framePolicyRevision = DiagnosticLogPolicy.revision();
             boolean collectStats = DiagnosticLogPolicy.extended();
             long callbackStartedNs = collectStats ? SystemClock.elapsedRealtimeNanos() : 0L;
@@ -1045,7 +1079,7 @@ final class DirectCameraSourceHub
                     makeCurrent(idleSurface);
                     pump.transferRead(slot);
                     transferred = target.recording.offer(index, pump, slot);
-                    if (!transferred) pump.awaitRead(slot);
+                    if (!transferred) awaitFrame(slot);
                     break;
                 }
             } catch (Throwable error) {
@@ -1075,7 +1109,7 @@ final class DirectCameraSourceHub
             long acquiredFrameTimestampNanos = frame.acquiredNs;
             try {
                 makeCurrent(idleSurface);
-                pump.awaitRead(slot);
+                awaitFrame(slot);
                 textureName = frame.texture;
             } catch (Throwable error) {
                 reportSourceFailure(error);
@@ -1095,7 +1129,7 @@ final class DirectCameraSourceHub
             for (int i = targets.size() - 1; i >= 0; i--) {
                 Target target = targets.get(i);
                 if (target.recording != null) continue;
-                if (!shouldRenderTarget(index, target.index, target.active)) continue;
+                if (target.quiesced || !shouldRenderTarget(index, target.index, target.active)) continue;
                 try {
                     DrawTiming timing = draw(target, acquiredFrameTimestampNanos, collectStats);
                     if (timing == null) continue;
@@ -1220,9 +1254,8 @@ final class DirectCameraSourceHub
                         completed.sourceRetired = !isCurrentWorker(this);
                         listener.onStats(index, completed);
                     })) {
-                        Log.w(LOG_TAG, "camera acquisition stats callback rejected: source_index="
-                                + index + ", source_closed=" + completed.sourceClosed
-                                + ", fps_window_id=" + completed.fpsWindowId);
+                        DiagnosticEvent.camera("camera_stats_callback_rejected", "source_index", index,
+                                "source_closed", completed.sourceClosed, "fps_window_id", completed.fpsWindowId);
                     }
                 } else {
                     postCoordinator(() -> listener.onStats(index, completed));
@@ -1234,7 +1267,7 @@ final class DirectCameraSourceHub
             if (!coordinatorHandler.post(() -> {
                 if (isCurrentWorker(this)) action.run();
             })) {
-                Log.w(LOG_TAG, "camera source coordinator stopped before failure callback");
+                DiagnosticEvent.camera("camera_callback_rejected", "source_index", index, "reason", "coordinator_stopped");
             }
         }
 
@@ -1243,7 +1276,16 @@ final class DirectCameraSourceHub
             postCoordinator(() -> listener.onSourceFailure(index, error));
         }
 
-        private DrawTiming draw(Target target, long acquiredFrameTimestampNanos,
+        private final DiagnosticTimingWindow drawPhases = new DiagnosticTimingWindow("work_us", "cpu_us", "draw_us", "draw_cpu_us", "swap_us", "swap_cpu_us");
+        private DrawTiming draw(Target target, long acquiredFrameTimestampNanos, boolean collectStats) throws Exception {
+            if (target.quiesced) return null;
+            CriticalOperationTrace trace = CriticalOperationTrace.begin("camera_output", DiagnosticEvent::camera,
+                    "source_index", index, "request_id", target.requestId, "producer_epoch", target.producerEpoch,
+                    "surface_identity", System.identityHashCode(target.surface), "frame_timestamp_ns", acquiredFrameTimestampNanos);
+            try { return drawFrame(target, acquiredFrameTimestampNanos, collectStats); }
+            finally { CriticalOperationTrace.end(trace); }
+        }
+        private DrawTiming drawFrame(Target target, long acquiredFrameTimestampNanos,
                 boolean collectStats) throws Exception {
             long startedNs = SystemClock.elapsedRealtimeNanos();
             long frameAgeNs = Math.max(0, System.nanoTime() - acquiredFrameTimestampNanos);
@@ -1321,6 +1363,8 @@ final class DirectCameraSourceHub
                         display, output, acquiredFrameTimestampNanos),
                         "downstream frame timestamp failed");
             }
+            CriticalOperationTrace.phase("camera_egl_swap");
+            long swapCpuStarted = collectStats ? android.os.Debug.threadCpuTimeNanos() : 0;
             long swapStartedNs = SystemClock.elapsedRealtimeNanos();
             if (!EGL14.eglSwapBuffers(display, output)) {
                 int eglError = EGL14.eglGetError();
@@ -1331,6 +1375,16 @@ final class DirectCameraSourceHub
                         + " retiring=" + target.retiring + " egl=" + eglError);
             }
             long swapWaitNs = SystemClock.elapsedRealtimeNanos() - swapStartedNs;
+            if (collectStats) {
+                long end = SystemClock.elapsedRealtimeNanos(), cpuEnd = android.os.Debug.threadCpuTimeNanos();
+                Object[] report = drawPhases.recordContext(SystemClock.elapsedRealtime(), new Object[]{
+                        "source_index", index, "request_id", target.requestId, "producer_epoch", target.producerEpoch,
+                        "surface_identity", System.identityHashCode(target.surface), "frame_timestamp_ns", acquiredFrameTimestampNanos},
+                        (end-startedNs)/1000, (cpuEnd-cpuStartedNs)/1000,
+                        (swapStartedNs-startedNs)/1000, (swapCpuStarted-cpuStartedNs)/1000,
+                        swapWaitNs/1000, (cpuEnd-swapCpuStarted)/1000);
+                if (report != null) DiagnosticEvent.camera("camera_output_phases", report);
+            }
             if (!sizeReady) return null;
             if (rendered != null && target.acknowledgedToken != rendered.token) {
                 target.mapping.applied(rendered.token, target.mesh.rawFallback,
@@ -1360,7 +1414,7 @@ final class DirectCameraSourceHub
                     postCoordinator(() -> listener.onTargetStall(
                             target.surface, target.index, swapWaitNs, evidence));
                 } catch (Throwable error) {
-                    Log.w(LOG_TAG, "target stall listener failed", error);
+                    DiagnosticEvent.camera("camera_stall_listener_failed", "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
                 }
             }
             DrawTiming timing = target.timing;
@@ -1567,8 +1621,8 @@ final class DirectCameraSourceHub
             listener.onCommandStats(report);
         } catch (Throwable error) {
             try {
-                Log.w(LOG_TAG, "camera command stats delivery failed: operation="
-                        + report.operation.key + ", worker=" + report.workerIndex, error);
+                DiagnosticEvent.camera("camera_stats_delivery_failed", "operation", report.operation.key,
+                        "worker", report.workerIndex, "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
             } catch (Throwable ignored) { }
         }
     }
@@ -1579,7 +1633,7 @@ final class DirectCameraSourceHub
                     ? SystemClock.elapsedRealtimeNanos() : 0L;
             commandMetrics.flushWorker(index, reason, nowNs);
         } catch (Throwable error) {
-            try { Log.w(LOG_TAG, "camera worker command stats flush failed: index=" + index, error); }
+            try { DiagnosticEvent.camera("camera_stats_flush_failed", "source_index", index, "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error)); }
             catch (Throwable ignored) { }
         }
     }
@@ -1590,7 +1644,7 @@ final class DirectCameraSourceHub
                     ? SystemClock.elapsedRealtimeNanos() : 0L;
             commandMetrics.flushAll(reason, nowNs);
         } catch (Throwable error) {
-            try { Log.w(LOG_TAG, "camera command stats flush failed: reason=" + reason, error); }
+            try { DiagnosticEvent.camera("camera_stats_flush_failed", "reason", reason, "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error)); }
             catch (Throwable ignored) { }
         }
     }
@@ -2202,6 +2256,7 @@ final class DirectCameraSourceHub
         int reportedWidth = -1;
         int reportedHeight = -1;
         boolean active = true;
+        volatile boolean quiesced;
         boolean timestampFrames;
         boolean retiring;
         CameraGpuOutput.Binding mapping;

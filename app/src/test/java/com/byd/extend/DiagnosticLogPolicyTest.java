@@ -19,9 +19,10 @@ public class DiagnosticLogPolicyTest {
             assertFalse(kind, DiagnosticLogPolicy.shouldProduce(kind));
         }
         for (String kind : new String[]{"reverse_steering_state", "vehicle_state", "dewarp_mesh_applied",
-                "camera_overlay_frame", "reverse_overlay_frame", "music_metadata_publish"}) {
+                "camera_overlay_frame", "reverse_overlay_frame", "music_metadata_publish", "motion_vehicle_state"}) {
             assertFalse(kind, DiagnosticLogPolicy.shouldPersist(kind));
             assertTrue(kind, DiagnosticLogPolicy.shouldProduce(kind));
+            assertFalse(kind, DiagnosticLogPolicy.diagnosticOnly(kind));
         }
         assertTrue(DiagnosticLogPolicy.shouldPersist("camera_source_command_failed"));
         assertTrue(DiagnosticLogPolicy.shouldPersist("a_new_event"));
