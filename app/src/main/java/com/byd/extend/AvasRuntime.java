@@ -11,6 +11,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +37,7 @@ import java.util.function.Consumer;
 final class AvasRuntime implements AutoCloseable {
     private final long cameraPowerSourceEpoch = SystemClock.elapsedRealtimeNanos();
     private static final File CACHE = new File("/data/local/tmp/bydextend_avas");
+    static final File ENGINE_PACKS = new File(CACHE, "engine-packs");
     private static final File CONFIG = new File(CACHE, "config.json");
     private final Context context;
     private final int ownerUid;
@@ -63,6 +65,7 @@ final class AvasRuntime implements AutoCloseable {
     private volatile long lastMotionLockSentAt = Long.MIN_VALUE;
     private boolean configOwned;
     private final Set<String> pendingPrune = new HashSet<>();
+    private final Object engineInstallLock = new Object();
     private volatile String activeAssetId = "";
     private String auditionProfileId = "";
     private String auditionAssetId = "";
@@ -229,6 +232,35 @@ final class AvasRuntime implements AutoCloseable {
 
     String cameraPowerStateSnapshot() {
         return cameraPowerStateLine(telemetryController.cameraPowerStateSnapshot(), true);
+    }
+
+    static boolean enginePackReady(String id) {
+        OptionalPackCatalog.Pack pack = OptionalPackCatalog.engine(id);
+        try { return pack.bundled() || OptionalPackFiles.ready(ENGINE_PACKS, pack); }
+        catch (java.io.UncheckedIOException failure) {
+            DiagnosticLogPolicy.printEvent(new DiagnosticEvent("avas", "avas_engine_pack_error",
+                    "pack", id, "operation", "read_receipt", "error", android.util.Log.getStackTraceString(failure)));
+            return false;
+        }
+    }
+
+    void installEnginePack(String id, ParcelFileDescriptor descriptor) throws IOException {
+        try (InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
+            OptionalPackCatalog.Pack pack = OptionalPackCatalog.engine(id);
+            if (closed) throw new IOException("AVAS runtime is closed");
+            synchronized (engineInstallLock) {
+                ensureCache();
+                if (!pack.bundled() && !enginePackReady(id))
+                    OptionalPackFiles.install(ENGINE_PACKS, pack, input, () -> closed);
+            }
+            event("avas_engine_pack_installed", "pack", id, "uid", Process.myUid());
+            // OEM/engine work runs under the helper identity, outside the incoming Binder call.
+            telemetry.execute(() -> engine.packInstalled(id));
+        } catch (IOException | RuntimeException failure) {
+            event("avas_engine_pack_error", "pack", id, "operation", "install",
+                    "error", android.util.Log.getStackTraceString(failure));
+            throw failure;
+        }
     }
 
     void installAsset(String assetId, ParcelFileDescriptor descriptor) throws IOException {

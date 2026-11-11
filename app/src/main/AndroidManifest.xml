@@ -55,6 +55,14 @@
         android:name="com.byd.extend.TurnSignalGuardApplication"
         android:theme="@style/Theme.BydExtend">
 
+        <!-- DownloadProvider runs under android.media, not our UID or system UID. -->
+        <receiver android:name="com.byd.extend.OptionalPackReceiver" android:exported="true"
+            android:permission="android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
+        </receiver>
+
         <activity
             android:name="com.byd.extend.CameraProbeActivity"
             android:exported="true"

@@ -436,6 +436,19 @@ public final class TurnSignalShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == TurnSignalShellProtocol.TX_INSTALL_ENGINE_PACK) {
+                    String id = data.readString();
+                    OptionalPackCatalog.engine(id); // Fixed catalog; this operation is app-UID-only.
+                    boolean supplied = data.readInt() != 0;
+                    if (supplied) {
+                        try (ParcelFileDescriptor descriptor = ParcelFileDescriptor.CREATOR.createFromParcel(data)) {
+                            requireAvasRuntime().installEnginePack(id, descriptor);
+                        }
+                    }
+                    reply.writeNoException();
+                    reply.writeInt(AvasRuntime.enginePackReady(id) ? 1 : 0);
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_INSTALL_AVAS_ASSET) {
                     String assetId = data.readString();
                     if (!TurnSignalShellProtocol.isAvasAssetAllowed(assetId)) {

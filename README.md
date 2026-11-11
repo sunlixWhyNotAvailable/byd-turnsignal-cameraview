@@ -472,7 +472,9 @@ These optional features use the vehicle's supported audio routes. Start at low v
 | Lock, unlock, power-on, and power-off sounds | Import audio files, choose a sound or random selection, and set volume separately for each event. Event sounds play sequentially; power-event profiles can suppress the associated lock/unlock sound. |
 | File audition | The note button previews a file through the interior navigation route. This is different from exterior playback and can have a different perceived volume. |
 | Microphone speech | Enable the feature, grant microphone access, and use Start/Stop or a learned button to toggle exterior speech. An on-screen microphone indicator remains visible while broadcasting. Noise suppression and echo cancellation are available when supported by Android. |
-| Engine simulation | Choose a built-in sound pack, enable exterior and/or interior output, and set their volumes independently. Available packs include V6, V8, V10, four-cylinder, flat-six, and V-twin sounds. |
+| Engine simulation | Choose a sound pack, enable exterior and/or interior output, and set their volumes independently. Available packs include V6, V8, V10, four-cylinder, flat-six, and V-twin sounds. |
+
+Ferrari V8 and the Arimo composition font are included in the app. Other engine and font packs download using the arrow beside their names; the progress ring becomes a Stop button while downloading. Packs remain available offline after installation. On update, the app downloads your selected engine and the fonts used in saved compositions over Wi-Fi or mobile data. Your choices stay unchanged: a missing engine waits for its pack, and a missing font temporarily uses Arimo. A cancelled download resumes only when you request it again.
 
 Engine simulation starts automatically from the confirmed vehicle **OK / ready-to-drive** state, not merely ACC. It uses pedal input for stationary revving and available motor/speed signals in motion, with smoothed response. Engine sounds are simulated, not measurements of a combustion engine.
 

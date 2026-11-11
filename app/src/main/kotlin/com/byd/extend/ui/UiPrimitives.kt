@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -671,6 +673,7 @@ internal fun ChoiceField(
     hudCompact: Boolean = false,
     optionFonts: List<FontFamily>? = null,
     optionEnabled: (Int) -> Boolean = { true },
+    optionAction: (@Composable (Int) -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
@@ -709,7 +712,9 @@ internal fun ChoiceField(
             }
             if (expanded) Popup(DropdownPosition, { expanded = false }, PopupProperties(focusable = true)) {
                 Column(Modifier.width(menuWidth).clip(RoundedCornerShape(6.dp))
-                    .border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp)).background(colors.panel)) {
+                    .border(1.dp, colors.borderStrong, RoundedCornerShape(6.dp)).background(colors.panel)
+                    .then(if (optionAction != null) Modifier.heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()) else Modifier)) {
                     choices.forEachIndexed { index, option ->
                         val optionPress = rememberPressFeedback(enabled && optionEnabled(index))
                         val choose = rememberVisualFirstClick {
@@ -719,7 +724,7 @@ internal fun ChoiceField(
                             onSelect(index)
                             expanded = false
                         }
-                        Box(Modifier.fillMaxWidth().height(40.dp)
+                        Box(Modifier.fillMaxWidth().height(if (optionAction != null) 48.dp else 40.dp)
                             .background(pressBackground(if (index == safeSelected) selectedBackground else Color.Transparent,
                                 colors, optionPress.pressed))
                             .then(optionPress.modifier)
@@ -732,7 +737,10 @@ internal fun ChoiceField(
                                 fontFamily = optionFonts?.getOrNull(index),
                                 fontWeight = if (index == safeSelected) FontWeight.SemiBold else FontWeight.Normal,
                                 textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+                                maxLines = if (optionAction != null) 2 else Int.MAX_VALUE,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = if (optionAction != null) 48.dp else 8.dp))
+                            if (optionAction != null) Box(Modifier.align(Alignment.CenterEnd)) { optionAction(index) }
                             if (index < choices.lastIndex) {
                                 Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(1.dp)
                                     .background(colors.border))

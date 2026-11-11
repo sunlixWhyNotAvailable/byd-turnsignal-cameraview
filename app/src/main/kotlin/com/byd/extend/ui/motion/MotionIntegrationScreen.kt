@@ -68,6 +68,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import com.byd.extend.OptionalPackCatalog
+import com.byd.extend.ui.rememberPackStates
+import com.byd.extend.ui.PackDownloadButton
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
@@ -437,8 +440,11 @@ private fun MotionEditor(template: MotionTemplate, store: MotionTemplateStore, p
     var selectedId by rememberSaveable { mutableStateOf(template.texts.firstOrNull()?.id) }
     var pickingColor by rememberSaveable { mutableStateOf(false) }
     val selected = template.texts.firstOrNull { it.id == selectedId }
-    val fontFamilies by produceState<List<FontFamily>>(emptyList(), store) {
-        value = withContext(Dispatchers.IO) { store.fonts.map { FontFamily(it) } }
+    val fontKeys = OptionalPackCatalog.FONT_IDS.indices.map { OptionalPackCatalog.font(it).key() }
+    val downloads = rememberPackStates(fontKeys)
+    val fontReady = fontKeys.map { downloads.getValue(it).ready() }
+    val fontFamilies by produceState<List<FontFamily>>(emptyList(), store, fontReady) {
+        value = withContext(Dispatchers.IO) { fontKeys.indices.map { FontFamily(store.font(it)) } }
     }
     val focus = LocalFocusManager.current
     fun change(block: MotionText) { onChange(template.withoutBlankTexts(block.id).replace(block)) }
@@ -494,7 +500,10 @@ private fun MotionEditor(template: MotionTemplate, store: MotionTemplateStore, p
                     ChoiceField(strings.motionText(R.string.motion_font), listOf(R.string.motion_sans, R.string.motion_serif,
                         R.string.motion_mono, R.string.motion_carlito, R.string.motion_roboto, R.string.motion_opensans,
                         R.string.motion_oswald, R.string.motion_lobster).map { strings.motionText(it) }, selected.font,
-                        { change(selected.copy(font = it)) }, palette, optionFonts = fontFamilies)
+                        { change(selected.copy(font = it)) }, palette, optionFonts = fontFamilies,
+                        optionEnabled = { downloads.getValue(fontKeys[it]).ready() },
+                        optionAction = { PackDownloadButton(fontKeys[it], OptionalPackCatalog.FONT_IDS[it],
+                            downloads.getValue(fontKeys[it]), palette, strings) })
                     MotionSlider(strings.motionText(R.string.motion_size), selected.size, 16..96, palette) { change(selected.copy(size = it)) }
                     MotionSlider(strings.motionText(R.string.motion_width), (selected.width * 100).roundToInt(), 20..100, palette) {
                         change(selected.copy(width = it / 100f).placed(selected.x, selected.y))
@@ -557,13 +566,7 @@ private fun textLayout(block: MotionText, strings: UiStrings, size: IntSize, fon
     val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = block.color
         textSize = block.size * size.width / 1080f
-        typeface = Typeface.create(font,
-            when {
-                block.bold && block.italic -> Typeface.BOLD_ITALIC
-                block.bold -> Typeface.BOLD
-                block.italic -> Typeface.ITALIC
-                else -> Typeface.NORMAL
-            })
+        typeface = font
     }
     val text = blockText(block, strings)
     val width = (block.width * size.width).roundToInt().coerceAtLeast(1)
@@ -596,11 +599,21 @@ internal fun MotionTemplateCanvas(template: MotionTemplate, store: MotionTemplat
     }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     // Lay out once in design pixels: viewport-specific font rounding changes wrapping and bottom clamping.
-    val fonts by produceState<List<Typeface>>(emptyList(), store) {
-        value = withContext(Dispatchers.IO) { store.fonts }
+    val fontKeys = template.texts.map { OptionalPackCatalog.font(it.font).key() }.distinct()
+    val downloads = rememberPackStates(fontKeys)
+    val fontReady = fontKeys.map { downloads.getValue(it).ready() }
+    val fontChoices = template.texts.map { it.font to when {
+        it.bold && it.italic -> Typeface.BOLD_ITALIC
+        it.bold -> Typeface.BOLD
+        it.italic -> Typeface.ITALIC
+        else -> Typeface.NORMAL
+    } }
+    val fonts by produceState<List<Typeface>>(emptyList(), store, fontChoices, fontReady) {
+        value = withContext(Dispatchers.IO) { fontChoices.map { store.font(it.first, it.second) } }
     }
     val designLayouts = remember(template.texts, strings, fonts) {
-        if (fonts.isEmpty()) emptyList() else template.texts.map { textLayout(it, strings, MotionDesignSize, fonts[it.font]) }
+        if (fonts.size != template.texts.size) emptyList() else template.texts.mapIndexed { index, block ->
+            textLayout(block, strings, MotionDesignSize, fonts[index]) }
     }
     val layouts = remember(designLayouts, canvasSize) {
         val sx = canvasSize.width / MotionDesignSize.width.toFloat()

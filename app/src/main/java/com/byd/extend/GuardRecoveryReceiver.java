@@ -9,6 +9,8 @@ public final class GuardRecoveryReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         String action = intent == null ? null : intent.getAction();
         if (!isAllowedAction(action)) return;
+        PendingResult packWork = goAsync();
+        OptionalPacks.get(context).completed(packWork::finish);
         CompatibilityExportArtifacts.checkAsync(context);
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)
                 || "android.intent.action.QUICKBOOT_POWERON".equals(action)

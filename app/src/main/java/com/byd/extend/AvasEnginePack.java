@@ -9,6 +9,8 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.File;
+import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 
 /** One predecoded, allowlisted engine recording pack. */
@@ -59,7 +61,7 @@ public final class AvasEnginePack {
         this.startBlendFull = startBlendFull;
     }
 
-    /** Loads only the requested built-in pack. */
+    /** Loads the requested built-in baseline. */
     public static AvasEnginePack load(AssetManager assets, String id) throws IOException {
         if (assets == null) throw new IllegalArgumentException("assets are required");
         requireAllowedId(id);
@@ -128,6 +130,12 @@ public final class AvasEnginePack {
         } catch (JSONException exception) {
             throw new IOException("invalid engine manifest", exception);
         }
+    }
+
+    static AvasEnginePack load(File directory, String id) throws IOException {
+        requireAllowedId(id);
+        return fromManifest(id, new String(Files.readAllBytes(new File(directory, "manifest.json").toPath()),
+                StandardCharsets.UTF_8), name -> Files.readAllBytes(new File(directory, name).toPath()));
     }
 
     private static void requireAllowedId(String id) {

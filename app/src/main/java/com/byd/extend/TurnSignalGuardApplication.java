@@ -18,5 +18,6 @@ public final class TurnSignalGuardApplication extends Application {
         DisplayPlacementPersistence.initialize(this, preferences, existingInstall);
         CameraFactoryDefaults.initialize(preferences, existingInstall);
         UpdateHintRuntime.get(this);
+        OptionalPacks.get(this);
     }
 }

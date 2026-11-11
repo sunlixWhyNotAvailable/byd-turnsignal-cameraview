@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.byd.extend.AvasEngineSettings
+import com.byd.extend.OptionalPackCatalog
 import com.byd.extend.CameraButtonBindings
 import com.byd.extend.R
 import kotlin.math.roundToInt
@@ -40,6 +41,8 @@ internal fun AvasEngineCard(
     val packIds = AvasEngineSettings.PACK_IDS
     val packLabels = packIds.map { strings.resource(enginePackResource(it)) }
     val packIndex = packIds.indexOf(state.packId).coerceAtLeast(0)
+    val packKeys = packIds.map { OptionalPackCatalog.engine(it).key() }
+    val downloads = rememberPackStates(packKeys)
     val hasError = state.state == "error" || state.error.isNotBlank()
 
     Section(title, colors, modifier, header = {
@@ -59,7 +62,15 @@ internal fun AvasEngineCard(
             ChoiceField("", packLabels, packIndex, {
                 send(AvasActionKind.SetEnginePack, packId = packIds.getOrNull(it)
                     ?: AvasEngineSettings.DEFAULT_PACK_ID)
-            }, colors, Modifier.height(40.dp), enabled = state.enabled, hudCompact = true)
+            }, colors, Modifier.height(40.dp), enabled = state.enabled, hudCompact = true,
+                optionEnabled = { downloads.getValue(packKeys[it]).ready() },
+                optionAction = { PackDownloadButton(packKeys[it], packLabels[it], downloads.getValue(packKeys[it]), colors, strings) })
+            if (!downloads.getValue(packKeys[packIndex]).ready() && (state.state != "waiting_pack"
+                    || downloads.getValue(packKeys[packIndex]).phase == "failed")) {
+                Text(strings.resource(if (downloads.getValue(packKeys[packIndex]).phase == "failed")
+                    R.string.asset_download_failed else R.string.avas_engine_waiting_pack),
+                    color = colors.muted, fontSize = 12.sp)
+            }
 
             SwitchLine(strings.resource(R.string.avas_engine_navigation_priority),
                 strings.resource(R.string.avas_engine_navigation_priority_hint), state.navigationPriority,
@@ -96,6 +107,7 @@ internal fun AvasEngineCard(
             }
             Text(strings.resource(when {
                 hasError -> R.string.avas_engine_error
+                state.state == "waiting_pack" -> R.string.avas_engine_waiting_pack
                 state.state == "starting" -> R.string.avas_engine_starting
                 state.testActive -> R.string.avas_engine_testing
                 state.state == "active" -> R.string.avas_engine_active

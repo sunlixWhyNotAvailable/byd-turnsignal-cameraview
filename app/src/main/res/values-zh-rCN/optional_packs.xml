@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="asset_download">下载 %1$s</string>
+    <string name="asset_download_stop">停止下载 %1$s</string>
+    <string name="asset_download_progress">下载中：%1$d%%</string>
+    <string name="asset_download_installing">安装中…</string>
+    <string name="asset_download_failed">下载失败。点击箭头重试。</string>
+    <string name="avas_engine_waiting_pack">等待所选引擎声音包</string>
+</resources>

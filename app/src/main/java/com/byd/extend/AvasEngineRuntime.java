@@ -78,7 +78,9 @@ final class AvasEngineRuntime implements AutoCloseable {
         if (action == AvasEngineSessionPolicy.Action.NONE && reroute && current != null
                 && !current.tail && next.enabled && hasOutput(next)) {
             start(!previous.packId.equals(next.packId));
-        } else apply(action);
+        } else if (action == AvasEngineSessionPolicy.Action.NONE && reroute && current == null
+                && policy.desiredActive()) start(false);
+        else apply(action);
     }
 
     synchronized void onPower(int value, boolean baseline) {
@@ -166,6 +168,9 @@ final class AvasEngineRuntime implements AutoCloseable {
                     current.tailReason = reason;
                     current.tail = true;
                     setState("stopping", "");
+                } else {
+                    setState(current == null ? "stopped" : "stopping", "");
+                    apply(policy.playbackTailFinished());
                 }
                 break;
             case STOP_NOW:
@@ -187,6 +192,10 @@ final class AvasEngineRuntime implements AutoCloseable {
 
     private void start(boolean ignition) {
         if (current != null) current.cancelled = true;
+        if (!AvasRuntime.enginePackReady(config.packId)) {
+            setState("waiting_pack", "");
+            return;
+        }
         Session next = new Session(config, ignition);
         if (ignition) next.cue = cueGate.begin();
         current = next;
@@ -212,7 +221,9 @@ final class AvasEngineRuntime implements AutoCloseable {
         try {
             if (session.cancelled || closed) return;
             Context owner = context.createPackageContext(BuildConfig.APPLICATION_ID, 0);
-            AvasEnginePack pack = AvasEnginePack.load(owner.getAssets(), session.pack);
+            OptionalPackCatalog.Pack entry = OptionalPackCatalog.engine(session.pack);
+            AvasEnginePack pack = entry.bundled() ? AvasEnginePack.load(owner.getAssets(), session.pack)
+                    : AvasEnginePack.load(OptionalPackFiles.content(AvasRuntime.ENGINE_PACKS, entry), session.pack);
             AvasEngineSynth synth = new AvasEngineSynth(pack);
             AvasEngineModel model = new AvasEngineModel(pack.idleRpm, pack.maxRpm);
             AvasAudioPlayer output = player.call();
@@ -380,7 +391,7 @@ final class AvasEngineRuntime implements AutoCloseable {
             if (!session.cancelled && !closed) {
                 failure = problem.toString();
                 log("avas_engine_error", "pack", session.pack, "phase", state,
-                        "error", failure);
+                        "error", android.util.Log.getStackTraceString(problem));
             }
         } finally {
             if (startCueStarted && !startCueEnded) {
@@ -414,12 +425,19 @@ final class AvasEngineRuntime implements AutoCloseable {
                         }
                         setState(failure.isEmpty() ? "stopped" : "error", failure);
                         apply(recovery);
+                        if (current == null && policy.desiredActive() && !AvasRuntime.enginePackReady(config.packId))
+                            setState("waiting_pack", "");
                         if (current == null) telemetry.setEnabled(false);
                     }
                 }
             }
             // Even loading/routing/PCM failures must never strand the event lane.
         }
+    }
+
+    synchronized void packInstalled(String id) {
+        if (!closed && id.equals(config.packId) && policy.desiredActive()
+                && (current == null || current.cancelled)) start(false);
     }
 
     private void logCue(String cue, String phase, int frames, long exteriorSubmitted,

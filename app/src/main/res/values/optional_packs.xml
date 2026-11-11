@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="asset_download">Download %1$s</string>
+    <string name="asset_download_stop">Stop downloading %1$s</string>
+    <string name="asset_download_progress">Downloading: %1$d%%</string>
+    <string name="asset_download_installing">Installing…</string>
+    <string name="asset_download_failed">Download failed. Tap the arrow to retry.</string>
+    <string name="avas_engine_waiting_pack">Waiting for the selected engine pack</string>
+</resources>

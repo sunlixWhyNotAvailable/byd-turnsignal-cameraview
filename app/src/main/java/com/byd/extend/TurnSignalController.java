@@ -55,6 +55,21 @@ final class TurnSignalController {
     private final AvasAudioLibrary avasLibrary;
     private final String apkMarker;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final Consumer<String> enginePackInstalled = this::onEnginePackInstalled;
+
+    private void onEnginePackInstalled(String key) {
+        if (stopped || !key.startsWith("engine-")) return;
+        try {
+            worker.execute(() -> {
+                IBinder value = healthyHelper();
+                if (stopped || value == null) return;
+                try { provisionEnginePack(value, avasLibrary.loadConfig().engine.packId); }
+                catch (Exception failure) {
+                    emit("avas_engine_pack_transfer_error", "pack", key, "error", Log.getStackTraceString(failure));
+                }
+            });
+        } catch (RejectedExecutionException ignored) { /* Controller has already stopped. */ }
+    }
     private final ExecutorService reverseHideWorker = Executors.newSingleThreadExecutor(r -> new Thread(r, "reverse-hide"));
     private volatile int closingReverseRequestId;
     private java.util.concurrent.CompletableFuture<LocalAdbClient.Result> cameraLaunch, avmLaunch;
@@ -158,6 +173,7 @@ final class TurnSignalController {
         avasLibrary = cameraRuntimeHost ? null : new AvasAudioLibrary(this.context, settings);
         apkMarker = currentApkMarker(this.context);
         if (!cameraRuntimeHost) migrateLegacyLatchState();
+        if (!cameraRuntimeHost) OptionalPacks.get(this.context).addInstalledListener(enginePackInstalled);
     }
 
     void start() {
@@ -223,6 +239,7 @@ final class TurnSignalController {
             desiredAvasMicrophone = "";
         }
         settings.unregisterOnSharedPreferenceChangeListener(motionTelemetrySettingsChanged);
+        if (!cameraRuntimeHost) OptionalPacks.get(context).removeInstalledListener(enginePackInstalled);
         pendingAvas.clear();
         handler.removeCallbacks(pingRunnable);
         // Foreground RSA belongs to the process session, not this controller's lifetime.
@@ -3009,6 +3026,37 @@ final class TurnSignalController {
             data.recycle();
             reply.recycle();
         }
+        try { provisionEnginePack(value, config.engine.packId); }
+        catch (Exception failure) {
+            // Configuration is already delivered; only this engine waits for its content.
+            emit("avas_engine_pack_transfer_error", "pack", config.engine.packId,
+                    "error", Log.getStackTraceString(failure));
+        }
+    }
+
+    private void provisionEnginePack(IBinder value, String id) throws Exception {
+        OptionalPackCatalog.Pack pack = OptionalPackCatalog.engine(id);
+        if (pack.bundled()) return;
+        java.io.File root = OptionalPacks.get(context).root();
+        if (!OptionalPackFiles.ready(root, pack)) return;
+        if (transactEnginePack(value, id, null)) return;
+        try (ParcelFileDescriptor descriptor = ParcelFileDescriptor.open(OptionalPackFiles.archive(root, pack),
+                ParcelFileDescriptor.MODE_READ_ONLY)) {
+            if (!transactEnginePack(value, id, descriptor)) throw new java.io.IOException("Helper did not install engine pack: " + id);
+        }
+    }
+
+    private static boolean transactEnginePack(IBinder value, String id, ParcelFileDescriptor descriptor) throws Exception {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
+            data.writeString(id);
+            data.writeInt(descriptor == null ? 0 : 1);
+            if (descriptor != null) descriptor.writeToParcel(data, 0);
+            requireTransact(value, TurnSignalShellProtocol.TX_INSTALL_ENGINE_PACK, data, reply);
+            return reply.readInt() != 0;
+        } finally { data.recycle(); reply.recycle(); }
     }
 
     private static void transactAvasAsset(

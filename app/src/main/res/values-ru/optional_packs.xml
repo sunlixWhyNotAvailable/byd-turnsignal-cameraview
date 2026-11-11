@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="asset_download">Скачать %1$s</string>
+    <string name="asset_download_stop">Остановить загрузку %1$s</string>
+    <string name="asset_download_progress">Загрузка: %1$d%%</string>
+    <string name="asset_download_installing">Установка…</string>
+    <string name="asset_download_failed">Не удалось загрузить. Нажмите стрелку для повтора.</string>
+    <string name="avas_engine_waiting_pack">Ожидание выбранного пакета двигателя</string>
+</resources>

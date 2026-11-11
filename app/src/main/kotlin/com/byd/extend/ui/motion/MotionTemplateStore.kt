@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.byd.extend.R
+import com.byd.extend.OptionalFonts
+import android.graphics.Typeface
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -15,11 +17,8 @@ internal class MotionTemplateStore(private val context: Context) {
     private val images = File(context.filesDir, "motion_backgrounds").apply { mkdirs() }
     private var previewBackground: String? = null
     private var previewImage: Bitmap? = null
-    val fonts by lazy {
-        listOf(R.font.motion_arimo, R.font.motion_tinos, R.font.motion_cousine, R.font.motion_carlito,
-            R.font.motion_roboto, R.font.motion_opensans, R.font.motion_oswald, R.font.motion_lobster_regular)
-            .map { context.resources.getFont(it) }
-    }
+    private val fontResolver = OptionalFonts(context)
+    fun font(index: Int, style: Int = Typeface.NORMAL): Typeface = fontResolver.get(index, style)
 
     fun read(): MotionTemplates {
         val json = preferences.getString("templates", null) ?: return MotionTemplates()
