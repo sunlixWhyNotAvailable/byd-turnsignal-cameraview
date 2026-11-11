@@ -3,7 +3,7 @@ param(
     [string]$AndroidNdk,
     [string]$BuildRoot,
     [string]$OutputRoot,
-    [string[]]$Abis = @("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+    [string[]]$Abis = @("arm64-v8a")
 )
 
 $ErrorActionPreference = "Stop"

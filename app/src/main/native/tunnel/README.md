@@ -3,9 +3,10 @@
 The Android library is built from this pinned Go module with Go 1.26.10 and the
 NDK r30 beta2 toolchain (API 26). `build.ps1` verifies module checksums, checks
 the upstream Tailscale `tsnet.go` digest before applying the no-file-logger
-patch, and emits all four Android ABIs under
+patch, and defaults to emitting only `arm64-v8a` under
 `app/build/generated/tunnelJniLibs` for Gradle to package. Generated binaries
-are not source-controlled. The build script pins the source digests for both
+are not source-controlled. The application's ABI filter also restricts native
+dependencies and CMake outputs to ARM64. The build script pins the source digests for both
 Tailscale patches: disabling its file logger and routing TLS/ACME certificate
 state through the supplied StateStore for non-file stores. This keeps Serve and
 Funnel private keys in the Android Keystore-encrypted store rather than under
