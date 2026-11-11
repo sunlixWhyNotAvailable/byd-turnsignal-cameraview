@@ -36,7 +36,9 @@ final class MusicArtworkImages {
                 icon = null;
                 android.content.pm.ApplicationInfo info = context.getPackageManager().getApplicationInfo(packageName, 0);
                 if (info.icon != 0) {
-                    Drawable drawable = context.getPackageManager().getApplicationIcon(info);
+                    // BYD's icon decoration requires an Application context absent in the shell helper.
+                    Drawable drawable = context.getPackageManager().getResourcesForApplication(info)
+                            .getDrawable(info.icon, null);
                     Bitmap rendered = Bitmap.createBitmap(SIDE, SIDE, Bitmap.Config.ARGB_8888);
                     drawable.setBounds(0, 0, SIDE, SIDE);
                     drawable.draw(new Canvas(rendered));
