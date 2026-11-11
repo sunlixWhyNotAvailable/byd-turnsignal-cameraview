@@ -1217,9 +1217,33 @@ final class TurnSignalController {
     }
 
     void closeCameraOverlays(String reason) {
+        long revision = DiagnosticLogPolicy.revision();
+        long queued = DiagnosticLogPolicy.extended() ? SystemClock.elapsedRealtimeNanos() : 0;
         executeCleanup(worker, () -> stopped, () -> {
-            for (CameraProfile profile : CameraProfile.values()) {
-                closeCameraOverlayNow(profile.id, reason);
+            boolean measure = queued != 0 && DiagnosticLogPolicy.extended()
+                    && revision == DiagnosticLogPolicy.revision();
+            long started = measure ? SystemClock.elapsedRealtimeNanos() : 0;
+            long cpu = measure ? android.os.Debug.threadCpuTimeNanos() : 0;
+            boolean closed = false;
+            for (CameraProfile profile : CameraProfile.values()) pendingOverlays[profile.id] = null;
+            try {
+                IBinder value = cameraHelper;
+                if (!cameraPing(value)) {
+                    value = resolveCameraHelper();
+                    if (!cameraPing(value)) return;
+                }
+                transactBlindCloseBatch(value, reason);
+                closed = true;
+            } catch (Throwable error) {
+                emit("camera_overlay_error", "stage", "close_blind_batch", "reason", reason,
+                        "error", StockAvmShellProtocol.diagnostic(error));
+            } finally {
+                if (measure && DiagnosticLogPolicy.extended() && revision == DiagnosticLogPolicy.revision())
+                    emit("reverse_phase_detail", "stage", "close_blind_batch", "reason", reason,
+                            "queue_us", (started - queued) / 1000,
+                            "run_us", (SystemClock.elapsedRealtimeNanos() - started) / 1000,
+                            "cpu_us", (android.os.Debug.threadCpuTimeNanos() - cpu) / 1000,
+                            "closed", closed);
             }
         });
     }
@@ -3193,16 +3217,10 @@ final class TurnSignalController {
         if (stopped) throw new IllegalStateException("camera launch cancelled by shutdown");
         if (value == null || cameraHelper != value)
             emitCameraStartupJournal(false, value == null ? "not_ready" : "binder_ready");
-        if (launch != null) {
-            if (value == null) {
-                throw new IllegalStateException(cameraHelperFailureMessage(launch));
-            }
-            if (!launch.ok) {
-                emit("camera_shell_launch_reconciled", "launch_ok", false,
-                        "launch_error", launch.error, "output", launch.output);
-            }
-        }
-        if (!cameraPing(value)) throw new IllegalStateException("camera_shell_binder_timeout");
+        if (launch != null && value == null)
+            throw new IllegalStateException(cameraHelperFailureMessage(launch));
+        int pid = cameraHelperPid(value);
+        if (pid <= 0) throw new IllegalStateException("camera_shell_binder_timeout");
         if (cameraHelper != value) {
             emit("camera_process_binder_ready", "avm", false, "elapsed_ms", SystemClock.elapsedRealtime());
             long epoch = installCameraHelper(value);
@@ -3212,6 +3230,17 @@ final class TurnSignalController {
                 cameraHelperLost(value, epoch, summary(error));
                 throw error;
             }
+        }
+        if (resolution.pendingLaunch != null) {
+            long epoch = cameraHelperEpoch(value);
+            // The shell command can finish after its validated Binder is already in use.
+            resolution.pendingLaunch.thenAccept(result -> {
+                if (!result.ok) emit("camera_shell_launch_reconciled", "launch_ok", false,
+                        "launch_error", result.error, "output", result.output,
+                        "validated_pid", pid, "validated_epoch", epoch,
+                        "runtime_ready", !stopped && epoch > 0 && cameraHelperEpoch(value) == epoch
+                                && value.isBinderAlive());
+            });
         }
         return value;
     }
@@ -3734,6 +3763,17 @@ final class TurnSignalController {
         } finally {
             data.recycle();
             reply.recycle();
+        }
+    }
+
+    private static void transactBlindCloseBatch(IBinder value, String reason) throws Exception {
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(CameraShellProtocol.DESCRIPTOR);
+            data.writeString(reason == null ? "unknown" : reason);
+            requireTransact(value, CameraShellProtocol.TX_BLIND_CLOSE_BATCH, data, reply);
+        } finally {
+            data.recycle(); reply.recycle();
         }
     }
 
@@ -4890,9 +4930,9 @@ final class TurnSignalController {
             CameraHelperSleeper sleeper,
             long timeoutMs) throws InterruptedException {
         IBinder value = cached;
-        if (ping.test(value)) return new CameraHelperResolution(value, null);
+        if (ping.test(value)) return new CameraHelperResolution(value, null, null);
         value = resolve.get();
-        if (ping.test(value)) return new CameraHelperResolution(value, null);
+        if (ping.test(value)) return new CameraHelperResolution(value, null, null);
 
         java.util.concurrent.CompletableFuture<LocalAdbClient.Result> pending = launch.get();
         LocalAdbClient.Result result = null;
@@ -4903,10 +4943,10 @@ final class TurnSignalController {
                 deadline = clock.getAsLong() + timeoutMs;
             }
             value = resolve.get();
-            if (ping.test(value)) return new CameraHelperResolution(value, result);
+            if (ping.test(value)) return new CameraHelperResolution(value, result, pending);
             sleeper.sleep(100);
         } while (clock.getAsLong() < deadline);
-        return new CameraHelperResolution(null, result);
+        return new CameraHelperResolution(null, result, pending);
     }
 
     static boolean shouldQueueCameraRecovery(boolean stopped, boolean pending) {
@@ -5023,10 +5063,13 @@ final class TurnSignalController {
     static final class CameraHelperResolution {
         final IBinder binder;
         final LocalAdbClient.Result launch;
+        final java.util.concurrent.CompletableFuture<LocalAdbClient.Result> pendingLaunch;
 
-        CameraHelperResolution(IBinder binder, LocalAdbClient.Result launch) {
+        CameraHelperResolution(IBinder binder, LocalAdbClient.Result launch,
+                java.util.concurrent.CompletableFuture<LocalAdbClient.Result> pendingLaunch) {
             this.binder = binder;
             this.launch = launch;
+            this.pendingLaunch = pendingLaunch;
         }
     }
 

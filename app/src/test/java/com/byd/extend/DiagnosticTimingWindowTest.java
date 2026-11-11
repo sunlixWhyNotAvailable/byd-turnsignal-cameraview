@@ -38,7 +38,7 @@ public class DiagnosticTimingWindowTest {
         assertEquals(2L, result.get("samples"));
         assertEquals(3d, (double) result.get("work_us_avg"), 0);
         for (String kind : new String[]{"distance_source_metrics", "distance_render_metrics",
-                "distance_visibility_detail", "distance_stale_detail", "reverse_phase_detail"}) {
+                "distance_visibility_detail", "distance_settings_detail", "distance_stale_detail", "reverse_phase_detail"}) {
             assertTrue(DiagnosticLogPolicy.shouldPersist(kind));
             DiagnosticLogPolicy.configure(false);
             assertFalse(DiagnosticLogPolicy.shouldPersist(kind));
@@ -68,6 +68,40 @@ public class DiagnosticTimingWindowTest {
         assertEquals(10, report.get("fid_at_slowest"));
         assertEquals(1, report.get("sequence_at_slowest"));
         assertEquals(3L, report.get("cpu_us_at_slowest"));
+    }
+
+    @Test public void flushRetainsShortWindowOnceAndStartsIndependentWindow() {
+        DiagnosticLogPolicy.configure(true);
+        DiagnosticTimingWindow timing = new DiagnosticTimingWindow("work_us", "cpu_us");
+        timing.recordContext(100, new Object[]{"sequence", 1}, 400, 20);
+        timing.recordContext(120, new Object[]{"sequence", 2}, 200, 50);
+        Map<String, Object> report = fields(timing.flush(185));
+        assertEquals(2L, report.get("samples"));
+        assertEquals(85L, report.get("window_ms"));
+        assertEquals(300d, (double) report.get("work_us_avg"), 0);
+        assertEquals(400L, report.get("work_us_max"));
+        assertEquals(20L, report.get("cpu_us_at_slowest"));
+        assertEquals(1, report.get("sequence_at_slowest"));
+        assertNull(timing.flush(190));
+        timing.record(200, 10, 5);
+        report = fields(timing.flush(205));
+        assertEquals(1L, report.get("samples"));
+        assertEquals(5L, report.get("window_ms"));
+        assertEquals(10d, (double) report.get("work_us_avg"), 0);
+        assertFalse(report.containsKey("sequence_at_slowest"));
+    }
+
+    @Test public void flushDoesNotReviveSamplesAcrossLoggingPolicyChanges() {
+        DiagnosticLogPolicy.configure(true);
+        DiagnosticTimingWindow timing = new DiagnosticTimingWindow("work_us");
+        timing.record(100, 900);
+        DiagnosticLogPolicy.configure(false);
+        assertNull(timing.flush(200));
+        DiagnosticLogPolicy.configure(true);
+        timing.record(300, 500);
+        DiagnosticLogPolicy.configure(false);
+        DiagnosticLogPolicy.configure(true);
+        assertNull(timing.flush(400));
     }
 
     private static Map<String, Object> fields(Object[] values) {

@@ -343,6 +343,15 @@ public final class CameraShellMain {
                     reply.writeNoException();
                     return true;
                 }
+                if (code == CameraShellProtocol.TX_BLIND_CLOSE_BATCH) {
+                    String reason = data.readString();
+                    runOnMain("close_blind_batch", 0, -1, () -> {
+                        closeOverlays(reason, CameraOverlayProfile.BLIND_COUNT);
+                        return null;
+                    });
+                    reply.writeNoException();
+                    return true;
+                }
                 if (code == CameraShellProtocol.TX_REVERSE_PREPARE) {
                     CameraShellProtocol.ReverseOverlaySpec spec =
                             CameraShellProtocol.ReverseOverlaySpec.readFromParcel(data);
@@ -805,7 +814,10 @@ public final class CameraShellMain {
                 try {
                     overlays[i].close(reason);
                 } catch (Throwable error) {
-                    if (failure == null) failure = error;
+                    IllegalStateException detail = new IllegalStateException(
+                            "close overlay " + i + ": " + reason, error);
+                    if (failure == null) failure = detail;
+                    else failure.addSuppressed(detail);
                 }
             }
             if (failure != null) throw new IllegalStateException(summary(failure), failure);

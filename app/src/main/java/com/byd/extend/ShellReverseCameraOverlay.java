@@ -143,19 +143,26 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
         }
         if (root == null) createWindow(display, size, spec);
         else {
+            long[] reuseTiming = phaseStart();
             root.setCallback(this);
             // A new automatic session starts from the safe Rear baseline.  The controller may
             // immediately select Front for D/N/P when gear switching is enabled.
             root.applyOverlayConfiguration(spec, centralFrontSourceEnabled);
+            phase("apply_configuration", requestId, reuseTiming);
             configureControls(display, size,
                     spec.widgetVisible && spec.layout.targetFor(
                             ReverseCameraLayout.WIDGET_PANE_ID) == displayTarget);
+            phase("configure_controls", requestId, reuseTiming);
             windowless.setVisible(false, imageAlpha);
+            phase("hide_retained_host", requestId, reuseTiming);
         }
+        long[] readyTiming = phaseStart();
         active = true;
         applySteering();
+        phase("apply_steering", requestId, readyTiming);
         root.setDewarpStatsContext(requestId, surfaceGenerations);
         if (root.surfacesReady()) onReverseSurfacesReady(surfaceGenerations);
+        phase("surface_ready_notify", requestId, readyTiming);
         phase("prepare_view", requestId, timing);
         emit("reverse_overlay_prepare", "request_id", requestId,
                 "display_target", displayTarget,
@@ -633,16 +640,20 @@ final class ShellReverseCameraOverlay implements ReverseCameraCompositionView.Ca
             return;
         }
         if (frontControl != null && rearControl != null) {
+            long[] timing = phaseStart();
             try {
                 ReverseCameraLayout.PixelRect frontBounds = root.selectorButtonBounds(
                         ReverseSideSelectorView.MODE_FRONT, size.x, size.y);
                 ReverseCameraLayout.PixelRect rearBounds = root.selectorButtonBounds(
                         ReverseSideSelectorView.MODE_REAR, size.x, size.y);
+                phase("selector_bounds", requestId, timing);
                 frontControl.setPosition(frontBounds.left, frontBounds.top);
+                phase("selector_front_position", requestId, timing);
                 rearControl.setPosition(rearBounds.left, rearBounds.top);
+                phase("selector_rear_position", requestId, timing);
             } catch (Throwable error) {
                 emit("reverse_overlay_error", "stage", "selector_reposition",
-                        "request_id", requestId, "error", summary(error));
+                        "request_id", requestId, "error", StockAvmShellProtocol.diagnostic(error));
             }
             return;
         }

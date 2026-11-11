@@ -37,6 +37,11 @@ final class DiagnosticTimingWindow {
             sums[i] += values[i]; maxima[i] = Math.max(maxima[i], values[i]);
         }
         if (nowMs - start < 5000) return null;
+        return flush(nowMs);
+    }
+
+    Object[] flush(long nowMs) {
+        if (!enabled() || count == 0) return null;
         ArrayList<Object> fields = new ArrayList<>();
         fields.add("samples"); fields.add(count);
         fields.add("window_ms"); fields.add(nowMs - start);

@@ -14,7 +14,7 @@ final class CameraShellProtocol {
             "com.byd.extend.ICameraShellCallback";
     static final String LOCK_PATH = "/data/local/tmp/bydextend_camera.lock";
     static final String LOG_PATH = "/data/local/tmp/bydextend_camera.log";
-    static final int VERSION = 48;
+    static final int VERSION = 49;
 
     static final int TX_PING = IBinder.FIRST_CALL_TRANSACTION;
     static final int TX_REGISTER_CALLBACK = IBinder.FIRST_CALL_TRANSACTION + 1;
@@ -42,6 +42,7 @@ final class CameraShellProtocol {
     static final int TX_CONFIGURE_LOGGING = IBinder.FIRST_CALL_TRANSACTION + 20;
     static final int TX_REVERSE_STEERING = IBinder.FIRST_CALL_TRANSACTION + 21;
     static final int TX_REVERSE_HIDE_BATCH = IBinder.FIRST_CALL_TRANSACTION + 22;
+    static final int TX_BLIND_CLOSE_BATCH = IBinder.FIRST_CALL_TRANSACTION + 23;
     static final int CAP_REVERSE_TOGGLE_MODE = 1;
     static final int CB_EVENT = IBinder.FIRST_CALL_TRANSACTION;
 

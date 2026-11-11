@@ -5,6 +5,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.SystemClock
 import android.widget.FrameLayout
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.function.BiConsumer
 import java.util.function.Consumer
 import kotlin.math.roundToInt
@@ -66,6 +68,7 @@ class DistanceWidgetController internal constructor(
     }
 
     fun settingsChanged() = dispatch {
+        val previous = settings
         try { settings = DistanceWidgetStore.read(context.settings); overlayFailure = false }
         catch (error: Exception) {
             failure("settings", error)
@@ -76,6 +79,7 @@ class DistanceWidgetController internal constructor(
         }
         event.accept("distance_settings", arrayOf("enabled", settings.enabled, "target", settings.target.name,
             "format", settings.format.name, "zones", settings.zones.size))
+        if (settings != previous) settingsDiagnostic()
         reconcile()
     }
     fun power(on: Boolean) {
@@ -92,11 +96,12 @@ class DistanceWidgetController internal constructor(
         preview = value && appVisible
         reconcile(); publishPreview()
     }
-    fun loggingChanged() = dispatch { if (needed) publishFrame() }
+    fun loggingChanged() = dispatch { settingsDiagnostic(); if (needed) publishFrame() }
     fun toggle() = dispatch {
         if (!settings.enabled) return@dispatch
         context.settings.edit().putBoolean(DistanceWidgetStore.HIDDEN, !settings.hiddenByButton).apply()
         settings = DistanceWidgetStore.read(context.settings)
+        settingsDiagnostic()
         render()
         event.accept("distance_button", arrayOf("hidden", settings.hiddenByButton,
             "waiting", hosts.values.none { it.visible }))
@@ -200,6 +205,9 @@ class DistanceWidgetController internal constructor(
                 leftMargin = bounds.x.roundToInt(); topMargin = bounds.y.roundToInt()
             }
             // Load fonts/art on the owner thread before a telemetry callback needs to show this host.
+            if (host.preparedSettings != settings || host.generation != frame.generation)
+                flushHostTiming(host, "prepare_update")
+            host.generation = frame.generation
             host.view.update(settings, BlindSpotOverlayController.readCornerRadius(context.settings).toFloat(),
                 if (host.visible) frame.at(SystemClock.elapsedRealtime()) else DistanceFrame.unavailable(frame.generation, 0, "preparing"))
             host.preparedSettings = settings
@@ -207,9 +215,10 @@ class DistanceWidgetController internal constructor(
         } catch (error: Exception) { overlayError("prepare", error) }
     }
     private fun render() {
-        frame = frame.at(SystemClock.elapsedRealtime())
-        val show = requestedPowerOn && !appVisible && !overlayFailure && frame.fresh(SystemClock.elapsedRealtime()) &&
-            settings.visible(powerOn, true, frame.distances().map { it.takeIf(Double::isFinite) })
+        val now = SystemClock.elapsedRealtime()
+        frame = frame.at(now)
+        val hideReason = hiddenReason(now)
+        val show = hideReason == null
         try {
             val display = if (show && displayCached && cachedTarget == settings.target) cachedDisplay else null
             val metrics = cachedMetrics
@@ -217,10 +226,8 @@ class DistanceWidgetController internal constructor(
             hosts.forEach { (key, host) -> if (host.visible && (!show || key != hostKey)) {
                 host.view.stopAnimation()
                 host.overlay.setStrictVisible(false, 0f); host.visible = false
-                host.timing.clear(); host.animationTiming.clear()
-                if (DiagnosticLogPolicy.extended()) event.accept("distance_visibility_detail", arrayOf(
-                    "display", host.displayId, "visible", false, "frame_status", frame.status,
-                    "last_view_age_ms", SystemClock.elapsedRealtime() - host.view.sourceReceivedAt))
+                flushHostTiming(host, "hidden")
+                visibilityDiagnostic(host, hideReason ?: "display_changed")
             } }
             if (!show) return
             val host = hosts[hostKey]
@@ -229,24 +236,87 @@ class DistanceWidgetController internal constructor(
                 return
             }
             if (host.generation != frame.generation) {
-                host.timing.clear(); host.animationTiming.clear(); host.generation = frame.generation
+                flushHostTiming(host, "generation_changed"); host.generation = frame.generation
             }
             host.view.update(settings, BlindSpotOverlayController.readCornerRadius(context.settings).toFloat(), frame)
             if (!requestedPowerOn || !frame.at(SystemClock.elapsedRealtime()).fresh(SystemClock.elapsedRealtime())) {
                 host.view.stopAnimation()
-                if (host.visible) { host.overlay.setStrictVisible(false, 0f); host.visible = false }
+                flushHostTiming(host, "late_visibility_check")
+                if (host.visible) {
+                    host.overlay.setStrictVisible(false, 0f); host.visible = false
+                    visibilityDiagnostic(host, if (!requestedPowerOn) "power_requested_off" else "source_expired_during_update")
+                }
                 return
             }
-            if (!host.visible) { host.overlay.setStrictVisible(true, 1f); host.visible = true }
+            if (!host.visible) {
+                host.overlay.setStrictVisible(true, 1f); host.visible = true
+                visibilityDiagnostic(host, "eligible")
+            }
         } catch (error: Exception) {
             overlayError("overlay", error)
         }
+    }
+    private fun flushHostTiming(host: Host, reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        host.timing.flush(now)?.let {
+            event.accept("distance_render_metrics", arrayOf<Any>(*it, "display", host.displayId,
+                "width", host.view.width, "height", host.view.height, "generation", host.generation,
+                "flush_reason", reason))
+        }
+        host.animationTiming.flush(now)?.let {
+            event.accept("distance_animation_metrics", arrayOf<Any>(*it, "display", host.displayId,
+                "generation", host.generation, "flush_reason", reason))
+        }
+    }
+    private fun hiddenReason(now: Long): String? = when {
+        !requestedPowerOn -> "power_requested_off"
+        appVisible -> "app_visible"
+        overlayFailure -> "overlay_error"
+        !frame.fresh(now) -> "source_unavailable_or_stale"
+        !settings.visible(powerOn, true, frame.distances().map { it.takeIf(Double::isFinite) }) -> when {
+            !settings.enabled -> "disabled"
+            settings.hiddenByButton -> "hidden_by_button"
+            !powerOn -> "power_off"
+            else -> "outside_zones"
+        }
+        else -> null
+    }
+    private fun visibilityDiagnostic(host: Host, reason: String) {
+        if (!DiagnosticLogPolicy.extended()) return
+        val now = SystemClock.elapsedRealtime()
+        val distances = frame.distances()
+        event.accept("distance_visibility_detail", arrayOf(
+            "display", host.displayId, "visible", host.visible, "reason", reason,
+            "frame_status", frame.status, "generation", frame.generation,
+            "frame_received_ms", frame.receivedAt, "frame_age_ms", now - frame.receivedAt,
+            "adas_received_ms", frame.adasReceivedAt, "adas_age_ms", now - frame.adasReceivedAt,
+            "last_view_age_ms", now - host.view.sourceReceivedAt,
+            "frame_fresh", frame.fresh(now), "radar_available", frame.radarAvailable, "radar_mask", frame.radarMask,
+            "distances_cm", JSONArray(distances.map { if (it.isFinite()) it else JSONObject.NULL }),
+            "nearest_cm", (distances.filter(Double::isFinite).minOrNull() ?: JSONObject.NULL),
+            "threshold_cm", (settings.zones.maxOfOrNull { it.endCm } ?: JSONObject.NULL),
+            "requested_power_on", requestedPowerOn, "power_on", powerOn, "app_visible", appVisible,
+            "overlay_failure", overlayFailure, "enabled", settings.enabled,
+            "hidden_by_button", settings.hiddenByButton, "format", settings.format.name,
+            "target", settings.target.name))
+    }
+    private fun settingsDiagnostic() {
+        if (!DiagnosticLogPolicy.extended()) return
+        event.accept("distance_settings_detail", arrayOf("enabled", settings.enabled,
+            "hidden_by_button", settings.hiddenByButton, "target", settings.target.name,
+            "format", settings.format.name, "zones", JSONArray(settings.zones.map {
+                JSONObject().put("id", it.id).put("end_cm", it.endCm).put("color_argb", it.color)
+            })))
     }
     private fun overlayError(operation: String, error: Exception) {
         overlayFailure = true; failure(operation, error)
         hosts.values.forEach { host ->
             host.view.stopAnimation()
-            try { host.overlay.quiesce(); host.visible = false }
+            flushHostTiming(host, "overlay_error")
+            try {
+                host.overlay.quiesce()
+                if (host.visible) { host.visible = false; visibilityDiagnostic(host, "overlay_error") }
+            }
             catch (cleanup: Exception) { failure("overlay_cleanup", cleanup) }
         }
     }
@@ -267,7 +337,11 @@ class DistanceWidgetController internal constructor(
             displayManager?.unregisterDisplayListener(displayListener)
             hosts.values.forEach {
                 it.view.stopAnimation()
-                try { it.overlay.quiesce(); it.visible = false } catch(error: Exception) { failure("cleanup",error) }
+                flushHostTiming(it, "shutdown")
+                try {
+                    it.overlay.quiesce()
+                    if (it.visible) { it.visible = false; visibilityDiagnostic(it, "shutdown") }
+                } catch(error: Exception) { failure("cleanup",error) }
             }
         }
     }

@@ -369,7 +369,7 @@ final class ShellCameraOverlay implements BlindSpotCameraView.Callback {
                     "reusable", true);
         } catch (Throwable error) {
             emit("camera_overlay_error", "stage", "remove_window",
-                    "error", summary(error));
+                    "error", StockAvmShellProtocol.diagnostic(error));
         }
     }
 

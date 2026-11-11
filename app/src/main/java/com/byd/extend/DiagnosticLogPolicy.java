@@ -32,7 +32,7 @@ public final class DiagnosticLogPolicy {
             "reverse_camera_timing", "motion_checkup_frame", "motion_frame_layout",
             "motion_frame_performance", "motion_process_cpu",
             "weather_location_detail", "distance_frame_detail", "distance_render_detail", "distance_sources_detail",
-            "distance_source_metrics", "distance_render_metrics", "distance_animation_metrics", "distance_visibility_detail",
+            "distance_source_metrics", "distance_render_metrics", "distance_animation_metrics", "distance_visibility_detail", "distance_settings_detail",
             "distance_stale_detail", "reverse_phase_detail", "diagnostic_writer_metrics",
             "critical_thread_pause", "distance_publish_metrics", "telemetry_dispatch_metrics",
             "camera_acquisition_phases", "camera_output_phases", "camera_read_fence_metrics", "telemetry_apply_metrics", "telemetry_get_metrics", "telemetry_event_metrics"));
