@@ -88,6 +88,7 @@ final class MusicMetadataRuntime {
     private final BiConsumer<String, Runnable> eventReconciler;
     private final AudioManager audioManager;
     private final ActivityManager activityManager;
+    private final MusicArtworkRuntime artwork;
     private final ExecutorService writerExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "byd-music-metadata");
         thread.setDaemon(true);
@@ -144,6 +145,7 @@ final class MusicMetadataRuntime {
         this.handler = handler;
         this.eventSink = eventSink;
         this.eventReconciler = eventReconciler;
+        this.artwork = new MusicArtworkRuntime(context, eventSink);
         sessionListener = controllers -> {
             try {
                 observeReceiverFallbackSessions(controllers);
@@ -168,6 +170,7 @@ final class MusicMetadataRuntime {
         runOnHandler(() -> {
             if (terminalStop) return;
             enabled = value;
+            if (value) artwork.reset();
             if (enabled) startObservers("configure");
             else if (!enabled) stopObservers("disabled", awake);
             emit("music_metadata_config", "enabled", enabled, "awake", awake,
@@ -643,6 +646,7 @@ final class MusicMetadataRuntime {
             if (awake == interactive) return;
             boolean previous = awake;
             awake = interactive;
+            if (awake) artwork.reset();
             emit("music_metadata_awake", "source_event", reason,
                     "old_awake", previous, "awake", awake,
                     "observer_active", observersStarted);
@@ -735,6 +739,7 @@ final class MusicMetadataRuntime {
     }
 
     private void stopObservers(String reason, boolean clearCard) {
+        artwork.update(null, null);
         cancelReceiverFallback("observer_stop:" + reason);
         lifecycleGeneration++;
         handler.removeCallbacks(publishRunnable);
@@ -777,6 +782,7 @@ final class MusicMetadataRuntime {
     }
 
     private void pausePublishing() {
+        artwork.update(null, null);
         cancelReceiverFallback("sleep");
         releaseAllMediaKeys("sleep");
         lifecycleGeneration++;
@@ -808,6 +814,7 @@ final class MusicMetadataRuntime {
             if (next.containsKey(token)) continue;
             SessionBinding removed = sessions.remove(token);
             if (removed != null) {
+                artwork.removed(removed.controller);
                 releaseMediaKeysFor(removed, "session_removed");
                 removed.destroyed = true;
                 removed.unregister();
@@ -844,6 +851,7 @@ final class MusicMetadataRuntime {
             focusPackage = currentAudioFocusPackage();
         } catch (Throwable failure) {
             setError("audio_focus: " + summary(failure), reason);
+            artwork.update(null, null);
             return;
         }
         if (!focusPackage.equals(lastFocusPackage)) {
@@ -861,6 +869,8 @@ final class MusicMetadataRuntime {
             selectionPackage = lastPublishedPackage;
         }
         SessionBinding selected = selectSession(sessions.values(), selectionPackage);
+        artwork.update(selected == null ? null : selected.controller,
+                selected == null ? null : selected.metadata);
         if (selected == null) {
             cancelProgressRefresh();
             selectedToken = null;
@@ -909,6 +919,7 @@ final class MusicMetadataRuntime {
     }
 
     private void relinquishToOem(String reason) {
+        artwork.update(null, null);
         cancelProgressRefresh();
         boolean owned = published || writeInFlight || queuedWrite != null;
         if (owned) lifecycleGeneration++;
@@ -1459,6 +1470,7 @@ final class MusicMetadataRuntime {
         @Override
         public void onMetadataChanged(MediaMetadata metadata) {
             this.metadata = metadata;
+            artwork.metadataChanged(controller, metadata);
             eventReconciler.accept("metadata_callback",
                     () -> schedulePublish("metadata_callback", false));
         }
@@ -1477,6 +1489,7 @@ final class MusicMetadataRuntime {
 
         @Override
         public void onSessionDestroyed() {
+            artwork.removed(controller);
             observeReceiverFallbackSessionDestroyed(this);
             releaseMediaKeysFor(this, "session_destroyed");
             destroyed = true;

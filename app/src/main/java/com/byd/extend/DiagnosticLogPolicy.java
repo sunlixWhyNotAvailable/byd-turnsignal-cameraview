@@ -21,7 +21,7 @@ public final class DiagnosticLogPolicy {
             "camera_dewarp_stats", "camera_overlay_frame", "reverse_overlay_frame",
             "camera_config_read", "camera_config_received", "camera_config_applied",
             "overlay_geometry", "camera_overlay_geometry", "lifetime_counters",
-            "avm_event", "music_journal_snapshot", "music_metadata_publish",
+            "avm_event", "music_journal_snapshot", "music_metadata_publish", "music_artwork_publish",
             "avas_nav_state", "avas_route_call", "avas_audio_sample", "avas_audio_progress",
             "avas_telemetry_sample", "avas_telemetry_read", "avas_telemetry_callback",
             "avas_track_state", "avas_track_sample", "avas_track_timestamp", "avas_pcm_levels",

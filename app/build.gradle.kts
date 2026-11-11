@@ -98,6 +98,45 @@ dependencies {
 }
 
 val tunnelJniOutput = layout.buildDirectory.dir("generated/tunnelJniLibs")
+
+// The host container cannot read the IVI APK mount. Ship only the fixed artwork writer DEX.
+val artworkClasses = layout.buildDirectory.dir("artwork/classes")
+val artworkAssets = layout.buildDirectory.dir("generated/artworkAssets")
+val compileArtworkWorker by tasks.registering(JavaCompile::class) {
+    source(fileTree("src/main/java/com/byd/extend/artwork") { include("*.java") })
+    classpath = files(android.bootClasspath)
+    destinationDirectory.set(artworkClasses)
+    sourceCompatibility = "17"
+    targetCompatibility = "17"
+    options.encoding = "UTF-8"
+    javaCompiler.set(javaToolchains.compilerFor { languageVersion.set(JavaLanguageVersion.of(17)) })
+}
+val artworkWorkerClasses by tasks.registering(Jar::class) {
+    dependsOn(compileArtworkWorker)
+    from(artworkClasses)
+    archiveFileName.set("worker-classes.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("artwork"))
+}
+val dexArtworkWorker by tasks.registering(Exec::class) {
+    dependsOn(artworkWorkerClasses)
+    inputs.file(artworkWorkerClasses.flatMap { it.archiveFile })
+    outputs.dir(artworkAssets)
+    doFirst {
+        val output = artworkAssets.get().dir("music-artwork").asFile
+        output.mkdirs()
+        val d8 = android.sdkDirectory.resolve("build-tools/${android.buildToolsVersion}/d8.bat")
+        commandLine("cmd", "/c", d8.absolutePath, "--release", "--min-api", "31",
+            "--lib", android.bootClasspath.first().absolutePath, "--output",
+            output.resolve("worker.jar").absolutePath, artworkWorkerClasses.get().archiveFile.get().asFile.absolutePath)
+    }
+}
+android.sourceSets.getByName("main").assets.srcDir(artworkAssets)
+tasks.matching {
+    (it.name.startsWith("merge") && it.name.endsWith("Assets")) || it.name.contains("lint", ignoreCase = true)
+}.configureEach {
+    dependsOn(dexArtworkWorker)
+}
+
 android.sourceSets.getByName("main").jniLibs.srcDir(tunnelJniOutput)
 val buildCameraTunnels by tasks.registering(Exec::class) {
     inputs.dir("src/main/native/tunnel")
