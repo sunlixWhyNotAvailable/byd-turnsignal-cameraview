@@ -10,6 +10,7 @@ public final class AdasDistanceModel {
     public static final int DIRECTIONS = 8;
     // Clockwise: front, front-right, right, rear-right, rear, rear-left, left, front-left.
     private static final double[][][] PATCHES = createPatches();
+    private static final double[] CONTOUR_BOUNDS = createContourBounds();
     private static final double EPSILON = 1e-7;
     private static final double[][] EMPTY = new double[0][];
 
@@ -106,6 +107,21 @@ public final class AdasDistanceModel {
         int index=sector*2;
         coverage[index]=Double.isNaN(coverage[index]) ? position : Math.min(coverage[index],position);
         coverage[index+1]=Double.isNaN(coverage[index+1]) ? position : Math.max(coverage[index+1],position);
+    }
+
+    public static double contourStart(int sector) { return CONTOUR_BOUNDS[sector * 2]; }
+    public static double contourEnd(int sector) { return CONTOUR_BOUNDS[sector * 2 + 1]; }
+
+    private static double[] createContourBounds() {
+        double[] result = new double[DIRECTIONS * 2];
+        Arrays.fill(result, Double.NaN);
+        for (int sector = 0; sector < DIRECTIONS; sector++) {
+            for (double[] segment : PATCHES[sector]) {
+                include(result, sector, segment[0], segment[1]);
+                include(result, sector, segment[2], segment[3]);
+            }
+        }
+        return result;
     }
 
     private static double[][] clip(double[][] polygon, int axis, double edge, boolean greater) {

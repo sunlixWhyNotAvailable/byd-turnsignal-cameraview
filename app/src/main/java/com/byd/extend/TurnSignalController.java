@@ -128,6 +128,11 @@ final class TurnSignalController {
     private final PendingOverlay[] pendingOverlays =
             new PendingOverlay[CameraOverlayProfile.COUNT];
     private volatile int pendingReverseRequestId;
+    private volatile ReversePreparation reversePreparation;
+    // Only the existing worker admits preparation and releases its resources.
+    private volatile ReversePreparation reverseResourceOwner;
+    private IBinder reverseResourceHelper;
+    private volatile long reverseResourceEpoch;
     private volatile Consumer<ReverseSurfaces> pendingReverseSurfaceSink;
     private volatile IBinder pendingReverseHelper;
     private volatile long pendingReverseHelperEpoch;
@@ -205,6 +210,7 @@ final class TurnSignalController {
     }
 
     private void shutdown(boolean terminateShells, boolean keepAvas) {
+        cancelReversePreparation(0);
         cancelReverseOverlayShows(0, -1, 0, "controller_shutdown");
         for (ReverseOverlayVisibilityGate.Show canceled
                 : reverseVisibilityGate.close()) {
@@ -231,8 +237,12 @@ final class TurnSignalController {
             for (CameraOverlayProfile profile : CameraOverlayProfile.values()) {
                 closeCameraOverlayNow(profile.id, "controller_shutdown");
             }
-            if (!closeReverseOverlayNow("controller_shutdown")) {
-                shutdownCameraHelper();
+            try {
+                worker.execute(() -> {
+                    if (!closeReverseOverlayNow("controller_shutdown", reverseResourceOwner)) shutdownCameraHelper();
+                });
+            } catch (RejectedExecutionException ignored) {
+                // A previous shutdown has already queued the final cleanup.
             }
         }
         clearHelper(null);
@@ -1019,8 +1029,10 @@ final class TurnSignalController {
             long epoch = 0;
             boolean transactionComplete = false;
             try {
+                if (deferBlindPreparation(spec, prepareResultSink)) return;
                 value = ensureCameraHelper();
                 epoch = cameraHelperEpoch(value);
+                if (deferBlindPreparation(spec, prepareResultSink)) return;
                 int prepareResult = transactOverlayPrepare(value, spec);
                 if (prepareResult == CameraShellProtocol.PREPARE_RESTART_REQUIRED) {
                     if (!isCurrentPendingOverlay(pending)) return;
@@ -1030,6 +1042,7 @@ final class TurnSignalController {
                     value = restartCameraHelper(value, epoch, "overlay_prepare");
                     epoch = cameraHelperEpoch(value);
                     if (!isCurrentPendingOverlay(pending)) return;
+                    if (deferBlindPreparation(spec, prepareResultSink)) return;
                     prepareResult = transactOverlayPrepare(value, spec);
                 }
                 if (prepareResult == CameraShellProtocol.PREPARE_DEFERRED) {
@@ -1099,7 +1112,32 @@ final class TurnSignalController {
     }
 
     private boolean isCurrentPendingReverse(int requestId) {
-        return !stopped && requestId > 0 && pendingReverseRequestId == requestId;
+        return requestId > 0 && pendingReverseRequestId == requestId
+                && currentReversePreparation(requestId) != null;
+    }
+
+    private ReversePreparation currentReversePreparation(int requestId) {
+        ReversePreparation pending = reversePreparation;
+        return pending != null && pending.requestId == requestId && !stopped
+                && pending.current() && isCurrentCameraShellGeneration(pending.shellGeneration)
+                ? pending : null;
+    }
+
+    private void cancelReversePreparation(int requestId) {
+        ReversePreparation pending = reversePreparation;
+        if (pending != null && (requestId == 0 || requestId == pending.requestId)) pending.cancel();
+    }
+
+    private boolean deferBlindPreparation(CameraShellProtocol.OverlaySpec spec, Consumer<Integer> sink) {
+        ReversePreparation pending = reversePreparation;
+        if (spec.cameraId >= CameraOverlayProfile.BLIND_COUNT || pending == null
+                || currentReversePreparation(pending.requestId) == null || !pending.pending()) return false;
+        emit("camera_overlay_prepare_deferred", "camera_id", spec.cameraId,
+                "request_id", spec.requestId, "reason", "reverse_priority");
+        if (!handler.post(() -> sink.accept(CameraShellProtocol.PREPARE_DEFERRED)))
+            throw new IllegalStateException("main handler rejected deferred overlay result");
+        clearPendingOverlaySurface(spec.cameraId, spec.requestId);
+        return true;
     }
 
     private boolean isCurrentPendingReverse(
@@ -1189,29 +1227,43 @@ final class TurnSignalController {
         if (spec == null || surfaceSink == null || preparedSink == null) {
             throw new IllegalArgumentException("reverse spec/sinks required");
         }
-        long shellGeneration = cameraHelperInvalidationGeneration;
-        long queuedMs = SystemClock.elapsedRealtime();
-        reverseTiming("prepare", "queued", spec.requestId, -1, queuedMs, -1, false);
-        worker.execute(() -> {
-            if (!isCurrentCameraShellGeneration(shellGeneration)) return;
-            long startedMs = SystemClock.elapsedRealtime();
-            reverseTiming("prepare", "start", spec.requestId, -1, queuedMs, startedMs, false);
-            clearPendingBlindOverlays();
+        final ReversePreparation pending;
+        synchronized (this) {
+            if (stopped) return;
+            cancelReversePreparation(0);
+            pending = new ReversePreparation(spec.requestId, cameraHelperInvalidationGeneration);
+            reversePreparation = pending;
             pendingReverseRequestId = spec.requestId;
             pendingReverseSurfaceSink = surfaceSink;
             pendingReverseHelper = null;
             pendingReverseHelperEpoch = 0;
-            pendingReverseClusterExpected =
-                    spec.layout.containsTarget(CameraDisplayTarget.CLUSTER);
+            pendingReverseClusterExpected = spec.layout.containsTarget(CameraDisplayTarget.CLUSTER);
+        }
+        long queuedMs = SystemClock.elapsedRealtime();
+        reverseTiming("prepare", "queued", spec.requestId, -1, queuedMs, -1, false);
+        worker.execute(() -> {
+            if (currentReversePreparation(spec.requestId) != pending) return;
+            long startedMs = SystemClock.elapsedRealtime();
+            reverseTiming("prepare", "start", spec.requestId, -1, queuedMs, startedMs, false);
+            clearPendingBlindOverlays();
             IBinder value = null;
             long epoch = 0;
             boolean transactionComplete = false;
             try {
+                ReversePreparation previous = reverseResourceOwner;
+                if (previous != null && previous != pending && !closeReverseOverlayNow("request_replaced", previous))
+                    throw new IllegalStateException("previous reverse overlay cleanup failed");
+                if (currentReversePreparation(spec.requestId) != pending) return;
                 value = ensureCameraHelper();
                 epoch = cameraHelperEpoch(value);
+                if (currentReversePreparation(spec.requestId) != pending || !pending.begin()) return;
+                reverseResourceHelper = value;
+                reverseResourceEpoch = epoch;
+                reverseResourceOwner = pending;
                 reverseTiming("prepare_binder", "start", spec.requestId, -1,
                         queuedMs, startedMs, false);
                 int prepareResult = transactReversePrepare(value, spec);
+                if (currentReversePreparation(spec.requestId) != pending) return;
                 if (prepareResult == CameraShellProtocol.PREPARE_RESTART_REQUIRED) {
                     if (!isCurrentPendingReverse(spec.requestId)) return;
                     emit("camera_shell_restart", "scope", "reverse",
@@ -1219,30 +1271,39 @@ final class TurnSignalController {
                             "reason", "incompatible_prepare", "camera_shell_epoch", epoch);
                     value = restartCameraHelper(value, epoch, "reverse_prepare");
                     epoch = cameraHelperEpoch(value);
-                    if (!isCurrentPendingReverse(spec.requestId)) return;
+                    if (currentReversePreparation(spec.requestId) != pending) return;
                     prepareResult = transactReversePrepare(value, spec);
                 }
                 if (prepareResult != CameraShellProtocol.PREPARE_OK) {
                     throw new IllegalStateException("unknown reverse prepare result: "
                             + prepareResult);
                 }
-                pendingReverseHelper = value;
-                pendingReverseHelperEpoch = epoch;
+                synchronized (this) {
+                    if (currentReversePreparation(spec.requestId) != pending) return;
+                    pendingReverseHelper = value;
+                    pendingReverseHelperEpoch = epoch;
+                    pending.prepared();
+                }
                 transactionComplete = true;
                 emit("reverse_overlay_prepare", "request_id", spec.requestId);
-                if (!handler.post(preparedSink)) {
+                if (!handler.post(() -> {
+                    if (currentReversePreparation(spec.requestId) == pending) preparedSink.run();
+                })) {
                     throw new IllegalStateException("main handler rejected reverse prepare");
                 }
             } catch (Throwable error) {
+                emit("reverse_overlay_error", "stage", "prepare", "request_id", spec.requestId,
+                        "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
                 if (!isCurrentPendingReverse(spec.requestId, surfaceSink)) return;
                 if (!transactionComplete && value != null && !cameraPing(value)) {
                     cameraHelperLost(value, epoch, summary(error));
                     if (!isCurrentPendingReverse(spec.requestId, surfaceSink)) return;
                 }
                 clearPendingReverseSurfaces(spec.requestId);
-                emit("reverse_overlay_error", "stage", "prepare",
-                        "request_id", spec.requestId, "error", summary(error));
+                pending.cancel();
             } finally {
+                if (currentReversePreparation(spec.requestId) != pending)
+                    closeReverseOverlayNow("prepare_cancelled", pending);
                 reverseTiming("prepare", "end", spec.requestId, -1,
                         queuedMs, startedMs, transactionComplete);
             }
@@ -1258,11 +1319,14 @@ final class TurnSignalController {
         long queuedMs = SystemClock.elapsedRealtime();
         reverseTiming("arm_frames", "queued", requestId, displayTarget, queuedMs, -1, false);
         worker.execute(() -> {
+            ReversePreparation pending = currentReversePreparation(requestId);
+            if (pending == null) return;
             long startedMs = SystemClock.elapsedRealtime();
             boolean success = false;
             reverseTiming("arm_frames", "start", requestId, displayTarget, queuedMs, startedMs, false);
             try {
                 IBinder value = ensureCameraHelper();
+                if (currentReversePreparation(requestId) != pending) return;
                 transactReverseFrames(value, requestId, displayTarget, generations);
                 success = true;
             } catch (Throwable error) {
@@ -1350,6 +1414,13 @@ final class TurnSignalController {
         long requested = SystemClock.elapsedRealtime();
         closingReverseRequestId = requestId;
         invalidateReverseOverlayShows(requestId, "hide_requested");
+        ReversePreparation pending = reversePreparation;
+        if (pending != null && pending.requestId == requestId && !pending.hasResources()
+                && (reverseResourceOwner == null || !reverseResourceOwner.hasResources())) {
+            emit("reverse_overlay_hide_skipped", "request_id", requestId, "reason", "prepare_not_started");
+            postCompletion(completion, true, "reverse_hide_batch", requestId);
+            return;
+        }
         IBinder value; long epoch;
         synchronized (this) { value = cameraHelper; epoch = cameraHelperEpoch; }
         int[] tabletCopy = tablet == null ? null : tablet.clone();
@@ -1401,6 +1472,7 @@ final class TurnSignalController {
     }
 
     void invalidateReverseOverlayShows(int requestId, String reason) {
+        cancelReversePreparation(requestId);
         cancelReverseOverlayShows(requestId, -1, 0, reason);
     }
 
@@ -1418,6 +1490,8 @@ final class TurnSignalController {
     }
 
     private void invalidateReverseShowsForHelperLoss(long helperEpoch, String reason) {
+        ReversePreparation owner = reverseResourceOwner;
+        if (owner != null && reverseResourceEpoch == helperEpoch) owner.cancel();
         cancelReverseOverlayShows(0, -1, helperEpoch, reason);
     }
 
@@ -1632,11 +1706,22 @@ final class TurnSignalController {
         }
     }
 
-    void closeReverseOverlay(String reason, Consumer<Boolean> completion) {
-        worker.execute(() -> {
-            boolean success = closeReverseOverlayNow(reason);
-            postCompletion(completion, success, "reverse_close", 0);
-        });
+    void closeReverseOverlay(int requestId, String reason, Consumer<Boolean> completion) {
+        ReversePreparation current = reversePreparation;
+        ReversePreparation owner = reverseResourceOwner;
+        ReversePreparation pending = current != null && current.requestId == requestId ? current
+                : owner != null && owner.requestId == requestId ? owner : null;
+        if (pending != null) pending.cancel();
+        try {
+            worker.execute(() -> {
+                boolean success = closeReverseOverlayNow(reason, pending);
+                postCompletion(completion, success, "reverse_close", requestId);
+            });
+        } catch (RejectedExecutionException error) {
+            emit("reverse_overlay_error", "stage", "submit_close", "request_id", requestId,
+                    "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
+            postCompletion(completion, false, "reverse_close", requestId);
+        }
     }
 
     /** Updates Reverse pane visibility in place; no prepare/reload or Surface recreation. */
@@ -3918,6 +4003,8 @@ final class TurnSignalController {
     }
 
     private void acquireReverseSurfaces(int requestId, boolean forceTabletFallback, long queuedMs) {
+        ReversePreparation pending = currentReversePreparation(requestId);
+        if (pending == null) return;
         Consumer<ReverseSurfaces> sink = pendingReverseSurfaceSink;
         if (sink == null || requestId != pendingReverseRequestId) return;
         long startedMs = SystemClock.elapsedRealtime();
@@ -3938,6 +4025,7 @@ final class TurnSignalController {
                         "camera shell unavailable before reverse Surface acquisition");
             }
             reverseTiming("acquire_binder", "start", requestId, -1, queuedMs, startedMs, false);
+            if (currentReversePreparation(requestId) != pending) return;
             ReverseSurfaces result = transactReverseAcquire(
                     value, requestId, currentEpoch,
                     pendingReverseClusterExpected, forceTabletFallback);
@@ -3945,6 +4033,10 @@ final class TurnSignalController {
             pendingCleared = true;
             long acquiredMs = SystemClock.elapsedRealtime();
             if (!handler.post(() -> {
+                if (currentReversePreparation(requestId) != pending) {
+                    releaseSurfaces(result.surfaces);
+                    return;
+                }
                 emit("reverse_camera_timing", "stage", "surface_delivery", "state", "start",
                         "request_id", requestId, "queued_ms", acquiredMs,
                         "queue_ms", SystemClock.elapsedRealtime() - acquiredMs);
@@ -3955,12 +4047,12 @@ final class TurnSignalController {
             }
             delivered = true;
         } catch (Throwable error) {
+            emit("reverse_overlay_error", "stage", "acquire_surfaces", "request_id", requestId,
+                    "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
             if ((pendingReverseSurfaceSink != sink
                     || !isCurrentPendingReverse(requestId))
                     && !(pendingCleared && pendingReverseSurfaceSink == null)) return;
             clearPendingReverseSurfaces(requestId);
-            emit("reverse_overlay_error", "stage", "acquire_surfaces",
-                    "request_id", requestId, "error", summary(error));
         } finally {
             reverseTiming("acquire", "end", requestId, -1, queuedMs, startedMs, delivered);
         }
@@ -3977,7 +4069,7 @@ final class TurnSignalController {
                 "success", success);
     }
 
-    private void clearPendingReverseSurfaces(int requestId) {
+    private synchronized void clearPendingReverseSurfaces(int requestId) {
         if (requestId != pendingReverseRequestId) return;
         pendingReverseRequestId = 0;
         pendingReverseSurfaceSink = null;
@@ -4071,20 +4163,28 @@ final class TurnSignalController {
         }
     }
 
-    private boolean closeReverseOverlayNow(String reason) {
-        pendingReverseRequestId = 0;
-        pendingReverseSurfaceSink = null;
-        pendingReverseHelper = null;
-        pendingReverseHelperEpoch = 0;
-        pendingReverseClusterExpected = false;
-        IBinder value = cameraHelper;
-        if (!cameraPing(value)) value = resolveCameraHelper();
-        if (!cameraPing(value)) return true;
+    private boolean closeReverseOverlayNow(String reason, ReversePreparation pending) {
+        if (pending == null) return true;
+        synchronized (this) {
+            if (reversePreparation == pending) clearPendingReverseSurfaces(pending.requestId);
+        }
+        ReversePreparation previous = reverseResourceOwner;
+        if (reversePreparation == pending && previous != null && previous != pending && !previous.current())
+            return closeReverseOverlayNow(reason, previous);
+        if (!pending.hasResources() || reverseResourceOwner != pending) return true;
+        IBinder value = reverseResourceHelper;
         try {
+            if (value == null || !value.isBinderAlive()) {
+                pending.closed();
+                return true;
+            }
             transactReverseClose(value, reason);
+            pending.closed();
             return true;
         } catch (Throwable error) {
-            emit("reverse_overlay_error", "stage", "close", "error", summary(error));
+            emit("reverse_overlay_error", "stage", "close", "request_id", pending.requestId,
+                    "camera_shell_epoch", reverseResourceEpoch,
+                    "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(error));
             return false;
         }
     }

@@ -118,9 +118,10 @@ internal class DistanceContourMotion {
         DistanceWidgetContour.buildSpans(readingsAt(now), maximum, background, spansAt(now))
 
     fun labelPosition(sector: Int): Float {
-        if (sourceFrame.radarSector(sector)) return sector.toFloat()
+        val middle = ((AdasDistanceModel.contourStart(sector) + AdasDistanceModel.contourEnd(sector)) / 2).toFloat()
+        if (sourceFrame.radarSector(sector)) return middle
         val objectValue = sourceFrame.objects.firstOrNull { it.hasCoverage() && it.distance(sector) == raw[sector]?.cm }
-            ?: return sector.toFloat()
+            ?: return middle
         return ((objectValue.coverageStart(sector) + objectValue.coverageEnd(sector)) / 2).toFloat()
     }
 }

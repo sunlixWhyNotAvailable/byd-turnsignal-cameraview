@@ -80,4 +80,43 @@ public class DiagnosticLogPolicyTest {
         policy.before(event.toString(), "camera_source_command_failed", 60_005);
         assertFalse(policy.suppressed());
     }
+
+    @Test public void extendedTelemetrySummarizesRepeatsButRetainsSemanticChanges() throws Exception {
+        DiagnosticLogPolicy.configure(true);
+        DiagnosticLogPolicy policy = new DiagnosticLogPolicy();
+        JSONObject event = new JSONObject().put("kind", "reverse_steering_state").put("source", "helper")
+                .put("valid", true).put("angle_degrees", 0).put("source_event", "callback")
+                .put("model", "native").put("observed_ms", 100).put("t_ms", 100);
+        assertNull(policy.before(event.toString(), "reverse_steering_state", 100));
+        assertFalse(policy.suppressed());
+        event.put("observed_ms", 200).put("t_ms", 200).put("event_sequence", 2);
+        assertNull(policy.before(event.toString(), "reverse_steering_state", 200));
+        assertTrue(policy.suppressed());
+        event.put("observed_ms", 30_100).put("t_ms", 30_100).put("event_sequence", 3);
+        JSONObject summary = new JSONObject(policy.before(event.toString(), "reverse_steering_state", 30_100));
+        assertTrue(policy.suppressed());
+        assertEquals(2, summary.getInt("count"));
+        assertEquals(200, summary.getLong("first_observed_ms"));
+        assertEquals(30_100, summary.getLong("last_observed_ms"));
+        assertEquals(100, summary.getLong("state_t_ms"));
+        event.put("observed_ms", 30_200).put("t_ms", 30_200);
+        assertNull(policy.before(event.toString(), "reverse_steering_state", 30_200));
+        event.put("angle_degrees", 1);
+        assertEquals(1,new JSONObject(policy.before(event.toString(), "reverse_steering_state", 30_300)).getInt("count"));
+        assertFalse(policy.suppressed());
+        Object[] changes = {false,"initial_read","fallback","OEM -1"};
+        String[] fields = {"valid","source_event","model","error"};
+        for (int i = 0; i < fields.length; i++) {
+            event.put(fields[i], changes[i]);
+            policy.before(event.toString(), "reverse_steering_state", 30_400);
+            assertFalse(fields[i],policy.suppressed());
+        }
+        event.remove("error");
+        policy.before(event.toString(), "reverse_steering_state", 30_410);
+        policy.before(event.toString(), "reverse_steering_state", 30_420);
+        assertTrue(policy.suppressed());
+        DiagnosticLogPolicy.configure(false); DiagnosticLogPolicy.configure(true);
+        policy.before(event.toString(), "reverse_steering_state", 30_500);
+        assertFalse(policy.suppressed());
+    }
 }

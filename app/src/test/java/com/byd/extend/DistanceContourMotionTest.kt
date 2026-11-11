@@ -39,15 +39,17 @@ class DistanceContourMotionTest {
             val next = (sector + direction + 8) % 8
             val motion = DistanceContourMotion()
             feed(motion, frame(1000, objectValue(1, sector to 60.0)))
+            val previous = motion.spansAt(1000).single()
             feed(motion, frame(1100, objectValue(1, next to 60.0)))
             val initial = motion.spansAt(1100).single()
             val middle = motion.spansAt(1150).single()
             val end = motion.spansAt(1200).single()
-            assertTrue(next.toFloat() in initial.start..initial.end)
-            assertTrue(initial.end - initial.start <= 1.501f)
+            val center = ((AdasDistanceModel.contourStart(next)+AdasDistanceModel.contourEnd(next))/2).toFloat()
+            assertTrue(center in initial.start..initial.end)
+            assertTrue(initial.end - initial.start <= end.end - end.start + previous.end - previous.start + .001f)
             assertTrue(middle.start in minOf(initial.start,end.start)..maxOf(initial.start,end.start))
-            assertEquals(next - .5f, end.start, .001f)
-            assertEquals(next + .5f, end.end, .001f)
+            assertEquals(AdasDistanceModel.contourStart(next).toFloat(), end.start, .001f)
+            assertEquals(AdasDistanceModel.contourEnd(next).toFloat(), end.end, .001f)
             assertTrue(motion.contours(1150,150,70).flatMap { it.points }.all { it.x.isFinite() && it.y.isFinite() })
         }
     }

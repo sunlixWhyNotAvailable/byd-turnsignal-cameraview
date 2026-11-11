@@ -18,6 +18,39 @@ public class AsyncServiceLogTest {
         assertTrue("real writer completed", done.await(5, TimeUnit.SECONDS));
     }
 
+    @Test public void realWriterFlushesBothTelemetrySummariesAndPreservesChangesAndCauses() throws Exception {
+        File file = temporary.newFile("telemetry.jsonl");
+        boolean previous = DiagnosticLogPolicy.extended();
+        DiagnosticLogPolicy.configure(true);
+        AsyncServiceLog log = new AsyncServiceLog(() -> file, 0);
+        try {
+            log.appendLifecycle("vehicle_state", 1, "valid", true, "blink", 0, "speed_kph", 0);
+            log.appendLifecycle("reverse_steering_state", 2, "valid", true, "angle_degrees", 0, "observed_ms", 2);
+            log.appendLifecycle("vehicle_state", 3, "valid", true, "blink", 0, "speed_kph", 0);
+            log.appendLifecycle("reverse_steering_state", 4, "valid", true, "angle_degrees", 0, "observed_ms", 4);
+            flush(log);
+            java.util.List<org.json.JSONObject> records = new java.util.ArrayList<>();
+            for (String line : Files.readAllLines(file.toPath())) records.add(new org.json.JSONObject(line));
+            assertEquals("two full states and their two flush summaries",4,records.size());
+            assertEquals("vehicle_state",records.get(2).getString("event"));
+            assertEquals(1,records.get(2).getInt("count"));
+            assertEquals("reverse_steering_state",records.get(3).getString("event"));
+            assertEquals(4,records.get(3).getLong("last_observed_ms"));
+            log.appendLifecycle("vehicle_state", 5, "valid", true, "blink", 1, "speed_kph", 0);
+            log.appendLifecycle("reverse_steering_state", 6, "valid", false, "error", "OEM -1", "stack", "read -> failed");
+            log.appendLifecycle("reverse_steering_state", 7, "valid", false, "error", "OEM -2", "stack", "read -> denied");
+            flush(log);
+            java.util.List<String> saved = Files.readAllLines(file.toPath());
+            assertEquals(1,new org.json.JSONObject(saved.get(4)).getInt("blink"));
+            assertEquals("OEM -1",new org.json.JSONObject(saved.get(5)).getString("error"));
+            assertEquals("read -> denied",new org.json.JSONObject(saved.get(6)).getString("stack"));
+            DiagnosticLogPolicy.configure(false); DiagnosticLogPolicy.configure(true);
+            log.appendLifecycle("vehicle_state", 8, "valid", true, "blink", 1, "speed_kph", 0);
+            flush(log);
+            assertEquals(8,Files.readAllLines(file.toPath()).size());
+        } finally { log.close(); DiagnosticLogPolicy.configure(previous); }
+    }
+
     @Test public void realFileFailureIsRetainedWhenStorageBecomesWritable() throws Exception {
         File parent = temporary.newFile("blocked-parent");
         File file = new File(parent, "helper-service-test.jsonl");

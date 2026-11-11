@@ -44,7 +44,8 @@ object DistanceWidgetContour {
             if (reading == null) return@forEachIndexed
             val winners = frame.objects.filter { it.distance(sector) == reading.cm }
             if (frame.radarSector(sector) || winners.isEmpty() || winners.any { !it.hasCoverage() })
-                parts += Part(sector, sector - .5f, sector + .5f)
+                parts += Part(sector, AdasDistanceModel.contourStart(sector).toFloat(),
+                    AdasDistanceModel.contourEnd(sector).toFloat())
             else winners.forEach {
                 parts += Part(sector, it.coverageStart(sector).toFloat(), it.coverageEnd(sector).toFloat())
             }

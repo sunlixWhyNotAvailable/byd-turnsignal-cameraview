@@ -1820,8 +1820,8 @@ final class CameraHelperMain {
             turnController.hideReverseOverlays(requestId, expectedEpoch, tablet, cluster, completion);
         }
 
-        void closeReverseOverlayWindow(String reason, Consumer<Boolean> completion) {
-            turnController.closeReverseOverlay(reason, completion);
+        void closeReverseOverlayWindow(int requestId, String reason, Consumer<Boolean> completion) {
+            turnController.closeReverseOverlay(requestId, reason, completion);
         }
 
         private String openDirectCamera(

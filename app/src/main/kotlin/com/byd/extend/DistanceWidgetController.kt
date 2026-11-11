@@ -20,6 +20,7 @@ class DistanceWidgetController internal constructor(
     private var settings = DistanceWidgetSettings()
     private var frame = DistanceFrame.unavailable(0, 0, "inactive")
     private var powerOn = false
+    @Volatile private var requestedPowerOn = false
     private var appVisible = false
     private var preview = false
     private var overlayFailure = false
@@ -33,6 +34,8 @@ class DistanceWidgetController internal constructor(
     private val diagnosticSampler = DistanceDiagnosticSampler()
     private val publishTiming = DiagnosticTimingWindow("work_us", "cpu_us", "view_us", "preview_us", "diagnostic_submit_us")
     private val pendingDiagnostic = Runnable { if (!stopped) publishDiagnostic() }
+    private val prepareWindow = Runnable { prepareHost() }
+    private var prepareQueued = false
     private var displayManager: android.hardware.display.DisplayManager? = null
     private var displayCached = false
     private var cachedTarget: DistanceTarget? = null
@@ -46,7 +49,8 @@ class DistanceWidgetController internal constructor(
     private data class Host(val displayId: Int, val overlay: WindowlessOverlayHost,
         val view: DistanceWidgetView, val width: Int, val height: Int,
         val timing: DiagnosticTimingWindow, val animationTiming: DiagnosticTimingWindow,
-        var generation: Long = -1, var visible: Boolean = false)
+        var generation: Long = -1, var visible: Boolean = false,
+        var preparedSettings: DistanceWidgetSettings? = null)
     private val hosts = mutableMapOf<Triple<Int, Int, Int>, Host>()
     private val source = DistanceAdasSource(identity, handler, { next ->
         if (needed && !stopped) { sources.adas(next); publishFrame() }
@@ -58,7 +62,7 @@ class DistanceWidgetController internal constructor(
     }
     private fun displayChanged() {
         displayCached = false; overlayFailure = false
-        if (!stopped) render()
+        if (!stopped) { schedulePreparation(); render() }
     }
 
     fun settingsChanged() = dispatch {
@@ -75,8 +79,9 @@ class DistanceWidgetController internal constructor(
         reconcile()
     }
     fun power(on: Boolean) {
-        if (on) dispatch { powerOn = true; reconcile() }
-        else source.control { if (!stopped) { powerOn = false; reconcile() } }
+        requestedPowerOn = on
+        if (on) dispatch { powerOn = requestedPowerOn; reconcile() }
+        else source.control { if (!stopped) { powerOn = requestedPowerOn; reconcile() } }
     }
     fun visibility(visible: Boolean) = dispatch {
         appVisible = visible
@@ -97,6 +102,7 @@ class DistanceWidgetController internal constructor(
             "waiting", hosts.values.none { it.visible }))
     }
     private fun reconcile() {
+        schedulePreparation()
         val next = powerOn && (settings.enabled || preview)
         if (needed != next) {
             needed = next
@@ -147,12 +153,16 @@ class DistanceWidgetController internal constructor(
     private fun publishPreview() {
         previewSink.accept(DistanceFrameCodec.encode(frame))
     }
-    private fun render() {
-        frame = frame.at(SystemClock.elapsedRealtime())
-        val show = !appVisible && !overlayFailure && frame.fresh(SystemClock.elapsedRealtime()) &&
-            settings.visible(powerOn, true, frame.distances().map { it.takeIf(Double::isFinite) })
+    private fun schedulePreparation() {
+        if (!stopped && requestedPowerOn && powerOn && settings.enabled && !overlayFailure && !prepareQueued) {
+            prepareQueued = handler.post(prepareWindow)
+        }
+    }
+    private fun prepareHost() {
+        prepareQueued = false
+        if (stopped || !requestedPowerOn || !powerOn || !settings.enabled || overlayFailure) return
         try {
-            if (show && (!displayCached || cachedTarget != settings.target)) {
+            if (!displayCached || cachedTarget != settings.target) {
                 if (displayManager == null) {
                     displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
                     displayManager!!.registerDisplayListener(displayListener, handler)
@@ -161,20 +171,9 @@ class DistanceWidgetController internal constructor(
                 cachedDisplay?.getRealMetrics(cachedMetrics)
                 cachedTarget = settings.target; displayCached = true
             }
-            val display = if (show) cachedDisplay else null
-            val metrics = cachedMetrics
-            val hostKey = display?.let { Triple(it.displayId, metrics.widthPixels, metrics.heightPixels) }
-            hosts.forEach { (key, host) -> if (host.visible && (!show || key != hostKey)) {
-                host.view.stopAnimation()
-                host.overlay.setStrictVisible(false, 0f); host.visible = false
-                host.timing.clear(); host.animationTiming.clear()
-                if (DiagnosticLogPolicy.extended()) event.accept("distance_visibility_detail", arrayOf(
-                    "display", host.displayId, "visible", false, "frame_status", frame.status,
-                    "last_view_age_ms", SystemClock.elapsedRealtime() - host.view.sourceReceivedAt))
-            } }
-            if (!show) return
-            if (display == null) throw IllegalStateException("Distance target display unavailable: ${settings.target}")
-            val host = hosts.getOrPut(requireNotNull(hostKey)) {
+            val display = cachedDisplay ?: return // The existing display listener retries availability changes.
+            val key = Triple(display.displayId, cachedMetrics.widthPixels, cachedMetrics.heightPixels)
+            val host = hosts.getOrPut(key) {
                 val root = FrameLayout(context)
                 val view = DistanceWidgetView(context); root.addView(view)
                 val timing = DiagnosticTimingWindow("draw_us", "draw_cpu_us", "frame_age_ms")
@@ -192,39 +191,75 @@ class DistanceWidgetController internal constructor(
                 }
                 val overlay = WindowlessOverlayHost(context, display, WindowlessOverlayHost.mirrorLayer()-1,
                     "distance", -1, event)
-                overlay.attach(root, metrics.widthPixels, metrics.heightPixels, 0, 0, "BYD Extend distance", false, true)
-                Host(display.displayId, overlay, view, metrics.widthPixels, metrics.heightPixels, timing, animationTiming)
+                if (!requestedPowerOn || stopped) return
+                overlay.attach(root, cachedMetrics.widthPixels, cachedMetrics.heightPixels, 0, 0, "BYD Extend distance", false, true)
+                Host(display.displayId, overlay, view, cachedMetrics.widthPixels, cachedMetrics.heightPixels, timing, animationTiming)
+            }
+            val bounds = settings.profile.frame(host.width.toFloat(), host.height.toFloat())
+            host.view.layoutParams = FrameLayout.LayoutParams(bounds.width.roundToInt(), bounds.height.roundToInt()).apply {
+                leftMargin = bounds.x.roundToInt(); topMargin = bounds.y.roundToInt()
+            }
+            // Load fonts/art on the owner thread before a telemetry callback needs to show this host.
+            host.view.update(settings, BlindSpotOverlayController.readCornerRadius(context.settings).toFloat(),
+                if (host.visible) frame.at(SystemClock.elapsedRealtime()) else DistanceFrame.unavailable(frame.generation, 0, "preparing"))
+            host.preparedSettings = settings
+            render()
+        } catch (error: Exception) { overlayError("prepare", error) }
+    }
+    private fun render() {
+        frame = frame.at(SystemClock.elapsedRealtime())
+        val show = requestedPowerOn && !appVisible && !overlayFailure && frame.fresh(SystemClock.elapsedRealtime()) &&
+            settings.visible(powerOn, true, frame.distances().map { it.takeIf(Double::isFinite) })
+        try {
+            val display = if (show && displayCached && cachedTarget == settings.target) cachedDisplay else null
+            val metrics = cachedMetrics
+            val hostKey = display?.let { Triple(it.displayId, metrics.widthPixels, metrics.heightPixels) }
+            hosts.forEach { (key, host) -> if (host.visible && (!show || key != hostKey)) {
+                host.view.stopAnimation()
+                host.overlay.setStrictVisible(false, 0f); host.visible = false
+                host.timing.clear(); host.animationTiming.clear()
+                if (DiagnosticLogPolicy.extended()) event.accept("distance_visibility_detail", arrayOf(
+                    "display", host.displayId, "visible", false, "frame_status", frame.status,
+                    "last_view_age_ms", SystemClock.elapsedRealtime() - host.view.sourceReceivedAt))
+            } }
+            if (!show) return
+            val host = hosts[hostKey]
+            if (host == null || host.preparedSettings != settings) {
+                if (!displayCached || display != null) schedulePreparation()
+                return
             }
             if (host.generation != frame.generation) {
                 host.timing.clear(); host.animationTiming.clear(); host.generation = frame.generation
             }
-            val bounds = settings.profile.frame(host.width.toFloat(), host.height.toFloat())
-            val layout = host.view.layoutParams as? FrameLayout.LayoutParams
-            if (layout == null || layout.width != bounds.width.roundToInt() || layout.height != bounds.height.roundToInt() ||
-                layout.leftMargin != bounds.x.roundToInt() || layout.topMargin != bounds.y.roundToInt()) {
-                host.view.layoutParams = FrameLayout.LayoutParams(bounds.width.roundToInt(), bounds.height.roundToInt()).apply {
-                    leftMargin = bounds.x.roundToInt(); topMargin = bounds.y.roundToInt()
-                }
-            }
             host.view.update(settings, BlindSpotOverlayController.readCornerRadius(context.settings).toFloat(), frame)
+            if (!requestedPowerOn || !frame.at(SystemClock.elapsedRealtime()).fresh(SystemClock.elapsedRealtime())) {
+                host.view.stopAnimation()
+                if (host.visible) { host.overlay.setStrictVisible(false, 0f); host.visible = false }
+                return
+            }
             if (!host.visible) { host.overlay.setStrictVisible(true, 1f); host.visible = true }
         } catch (error: Exception) {
-            overlayFailure = true; failure("overlay", error)
-            hosts.values.forEach { host ->
-                host.view.stopAnimation()
-                try { host.overlay.quiesce(); host.visible = false }
-                catch (cleanup: Exception) { failure("overlay_cleanup", cleanup) }
-            }
+            overlayError("overlay", error)
+        }
+    }
+    private fun overlayError(operation: String, error: Exception) {
+        overlayFailure = true; failure(operation, error)
+        hosts.values.forEach { host ->
+            host.view.stopAnimation()
+            try { host.overlay.quiesce(); host.visible = false }
+            catch (cleanup: Exception) { failure("overlay_cleanup", cleanup) }
         }
     }
     private fun failure(operation: String, error: Exception) {
         event.accept("distance_widget_error", arrayOf("operation", operation, "error", error.toString(), "stack", error.stackTraceToString()))
     }
     fun shutdown() {
+        requestedPowerOn = false
         source.control {
             if (stopped) return@control
             stopped = true
             handler.removeCallbacks(pendingDiagnostic)
+            handler.removeCallbacks(prepareWindow); prepareQueued = false
             needed = false; ++radarEpoch; radarPackets?.clear()
             radar?.stop(); radar = null; sources.clear()
             radarThread?.quitSafely(); radarThread = null

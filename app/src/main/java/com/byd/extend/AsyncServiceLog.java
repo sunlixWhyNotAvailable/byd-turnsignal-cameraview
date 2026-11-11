@@ -256,7 +256,10 @@ final class AsyncServiceLog {
             return true;
         } catch (Throwable failure) { closeWriter(failure); reportIoFailure("write", failure); return false; }
     }
-    private void finishPolicy() { String summary = policy.finish(); if (summary != null) write(summary); }
+    private void finishPolicy() {
+        String summary = policy.finish(); if (summary != null) write(summary);
+        for (String state : policy.finishTelemetry()) write(state);
+    }
     private static void complete(Runnable completion) {
         try { if (completion != null) completion.run(); } catch (Throwable ignored) { }
     }

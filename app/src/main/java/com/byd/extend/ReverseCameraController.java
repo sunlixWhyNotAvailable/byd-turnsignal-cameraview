@@ -1032,7 +1032,7 @@ final class ReverseCameraController {
                         closed.accept(value);
                     };
                     if (activeHelper == null) complete.accept(true);
-                    else activeHelper.closeReverseOverlayWindow(reason, complete);
+                    else activeHelper.closeReverseOverlayWindow(closingRequestId, reason, complete);
                 },
                 this::scheduleCleanupRetry,
                 this::clearCleanupRetry,

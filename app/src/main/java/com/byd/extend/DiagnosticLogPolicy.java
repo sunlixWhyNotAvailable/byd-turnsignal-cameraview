@@ -14,9 +14,8 @@ public final class DiagnosticLogPolicy {
     public static final String PREF_ENABLED = "extended_logs_enabled";
     private static volatile boolean extended;
     private static volatile long revision;
-    private static final DiagnosticLogPolicy STDOUT = new DiagnosticLogPolicy();
     private static final Set<String> DETAIL = new HashSet<>(Arrays.asList(
-            "telemetry_sample", "listener_event", "vehicle_state", "bsd_read", "reverse_steering_state",
+            "telemetry_sample", "listener_event", "vehicle_state", "bsd_read", "reverse_steering_state", "log_state_repeated",
             "bsd_event_ignored", "parking_radar_snapshot", "parking_radar_state",
             "parking_radar_event_ignored", "reverse_gear_read", "camera_source_hub_stats",
             "camera_dewarp_stats", "camera_overlay_frame", "reverse_overlay_frame",
@@ -47,6 +46,8 @@ public final class DiagnosticLogPolicy {
     private boolean suppressed;
     private long stateRevision = -1;
     private final LinkedHashMap<String, String> states = new LinkedHashMap<>();
+    private long telemetryRevision = -1;
+    private final LinkedHashMap<String, RepeatedState> telemetry = new LinkedHashMap<>();
     private static final Set<String> STATE_EVENTS = new HashSet<>(Arrays.asList(
             "app_permission_readback", "app_accessibility_binding_readback",
             "weather_accessibility_binding_readback", "adb_connection_time_policy",
@@ -71,16 +72,8 @@ public final class DiagnosticLogPolicy {
     static void print(String line) { Output.LOG.appendRaw(line); }
     static void printEvent(DiagnosticEvent event) { Output.LOG.appendEvent(event); }
     private static void printNow(String line) {
-        String kind = kind(line);
-        if (!shouldPersist(kind)) return;
-        String summary;
-        boolean suppress;
-        synchronized (STDOUT) {
-            summary = STDOUT.before(line, kind, System.nanoTime() / 1_000_000L);
-            suppress = STDOUT.suppressed();
-        }
-        if (summary != null) System.out.println(summary);
-        if (!suppress) System.out.println(line);
+        // Output.LOG already applies the policy on its writer thread, including flush summaries.
+        System.out.println(line);
     }
     static void flushOutput() {
         Output.LOG.flush(null);
@@ -103,6 +96,9 @@ public final class DiagnosticLogPolicy {
     boolean suppressed() { return suppressed; }
     String before(String line, String kind, long now) {
         suppressed = false;
+        resetTelemetryRevision();
+        if (extended && ("vehicle_state".equals(kind) || "reverse_steering_state".equals(kind)))
+            return telemetryBefore(line, kind, now);
         boolean errorKind = kind.contains("error") || kind.contains("failed")
                 || kind.contains("failure") || kind.contains("unavailable");
         boolean stateKind = STATE_EVENTS.contains(kind);
@@ -133,6 +129,71 @@ public final class DiagnosticLogPolicy {
         String result = finish();
         lastError = signature; lastKind = kind; firstAt = now; lastAt = now;
         return result;
+    }
+    private void resetTelemetryRevision() {
+        if (telemetryRevision != revision) { telemetry.clear(); telemetryRevision = revision; }
+    }
+    private String telemetryBefore(String line, String kind, long now) {
+        try {
+            JSONObject value = new JSONObject(line);
+            String key = kind + '|' + value.optString("source");
+            RepeatedState previous = telemetry.get(key);
+            if (hasFailure(value)) {
+                telemetry.remove(key);
+                return previous == null ? null : previous.finish();
+            }
+            long time = value.optLong("t_ms", now);
+            Long observed = value.has("observed_ms") ? value.getLong("observed_ms") : null;
+            for (String clock : CLOCK_FIELDS) value.remove(clock);
+            value.remove("observed_ms");
+            String signature = canonical(value);
+            if (previous == null || !previous.signature.equals(signature)) {
+                telemetry.put(key, new RepeatedState(kind, value.optString("source"), signature, time, now));
+                return previous == null ? null : previous.finish();
+            }
+            suppressed = true;
+            previous.repeat(time, observed);
+            if (now - previous.windowStart < 30_000) return null;
+            previous.windowStart = now;
+            return previous.finish();
+        } catch (Exception malformed) {
+            // Preserve malformed input verbatim; diagnostic compaction must never lose an event.
+            suppressed = false;
+            return null;
+        }
+    }
+    java.util.List<String> finishTelemetry() {
+        resetTelemetryRevision();
+        ArrayList<String> result = new ArrayList<>();
+        for (RepeatedState state : telemetry.values()) {
+            String summary = state.finish();
+            if (summary != null) result.add(summary);
+        }
+        return result;
+    }
+    private static final class RepeatedState {
+        final String kind, source, signature;
+        final long stateAt;
+        long windowStart, count, firstAt, lastAt;
+        Long firstObserved, lastObserved;
+        RepeatedState(String kind, String source, String signature, long stateAt, long now) {
+            this.kind = kind; this.source = source; this.signature = signature;
+            this.stateAt = stateAt; windowStart = now;
+        }
+        void repeat(long time, Long observed) {
+            if (count++ == 0) { firstAt = time; firstObserved = observed; }
+            lastAt = time; lastObserved = observed;
+        }
+        String finish() {
+            if (count == 0) return null;
+            String result = "{\"kind\":\"log_state_repeated\",\"event\":" + JSONObject.quote(kind)
+                    + ",\"source\":" + JSONObject.quote(source) + ",\"state_t_ms\":" + stateAt
+                    + ",\"count\":" + count + ",\"first_t_ms\":" + firstAt + ",\"last_t_ms\":" + lastAt
+                    + (firstObserved == null ? "" : ",\"first_observed_ms\":" + firstObserved
+                    + ",\"last_observed_ms\":" + lastObserved) + "}";
+            count = 0;
+            return result;
+        }
     }
     private static boolean hasFailure(JSONObject value) {
         if (value.has("ok") && !value.optBoolean("ok", true)) return true;

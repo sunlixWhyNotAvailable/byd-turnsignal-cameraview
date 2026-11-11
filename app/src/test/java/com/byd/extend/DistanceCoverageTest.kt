@@ -72,9 +72,59 @@ class DistanceCoverageTest {
         val combined=sources.frame(1000)
         assertEquals(65.0,combined.distances()[0],0.0)
         val full=spans(combined).single()
-        assertEquals(-.5f,full.start,0f); assertEquals(.5f,full.end,0f)
+        assertEquals(AdasDistanceModel.contourStart(0).toFloat(),full.start,0f)
+        assertEquals(AdasDistanceModel.contourEnd(0).toFloat(),full.end,0f)
         val old=DistanceFrame(1,1000,true,"ready",frame.distances())
         assertEquals(full,spans(old).single())
+    }
+
+    @Test fun recordedMixedRadarAndAdasShareBodyBoundariesWithoutChangingDistances() {
+        // Owner capture 11 Nov 07:44:03.949: the two broken joins were right/rear-right and rear-left/left.
+        val measured = frame(1000,
+            AdasDistanceModel.Obstacle(6610,1,41.509864807128906,-220.3990936279297,
+                459.64544677734375,190.98590087890625,-1.8288514521626142),
+            AdasDistanceModel.Obstacle(6613,4,19.773096084594727,236.77928161621094,
+                462.74005126953125,192.26861572265625,-4.119942786595011))
+        val radar = ParkingRadarState().apply {
+            begin(1,1); registered(1,1)
+            callback(911212560,35,1000,1); callback(911212552,50,1000,1)
+        }
+        val sources = DistanceSources().apply { adas(measured); radar(radar.snapshot()) }
+        val combined = sources.frame(1000)
+        val expected = measured.distances().apply { this[2]=35.0; this[6]=50.0 }
+        assertArrayEquals(expected,combined.distances(),0.0)
+        val joined = spans(combined)
+        assertEquals(listOf(listOf(2,3),listOf(5,6)),joined.map { it.sectors })
+        assertEquals(AdasDistanceModel.contourStart(2).toFloat(),joined[0].start,0f)
+        assertEquals(AdasDistanceModel.contourEnd(6).toFloat(),joined[1].end,0f)
+        val motion = DistanceContourMotion()
+        motion.accept(combined,readings(combined),1000)
+        assertEquals(joined,motion.spansAt(1000))
+        assertEquals(2f,motion.labelPosition(2),.00001f)
+        assertEquals(6f,motion.labelPosition(6),.00001f)
+        val expired = sources.frame(1500)
+        assertFalse(expired.distances()[3].isFinite())
+        assertFalse(expired.distances()[5].isFinite())
+        assertEquals(35.0,expired.distances()[2],0.0)
+        assertEquals(50.0,expired.distances()[6],0.0)
+    }
+
+    @Test fun fullBodyRegionsJoinAcrossCornersAndSeamAndPlaceCornerLabelsInsideThem() {
+        val values = DoubleArray(8) { 65.0 }
+        val full = DistanceFrame(1,1000,true,"ready",values)
+        val ring = spans(full).single()
+        assertTrue(ring.closed)
+        val contour = DistanceWidgetContour.buildSpans(readings(full),150,100,listOf(ring)).single()
+        assertEquals(contour.points.first(),contour.points.last())
+        val motion=DistanceContourMotion(); motion.accept(full,readings(full),1000)
+        for (sector in 0..7) assertEquals(
+            ((AdasDistanceModel.contourStart(sector)+AdasDistanceModel.contourEnd(sector))/2).toFloat(),
+            motion.labelPosition(sector),.00001f)
+        for (i in 1..6) values[i]=Double.NaN
+        val seam = spans(DistanceFrame(1,1000,true,"ready",values)).single()
+        assertEquals(listOf(7,0),seam.sectors)
+        assertEquals(AdasDistanceModel.contourStart(7).toFloat(),seam.start,0f)
+        assertEquals(AdasDistanceModel.contourEnd(0).toFloat()+8,seam.end,0f)
     }
 
     @Test fun sameDistanceGeometryMovesWithoutRestartingDuplicatesOrFreshness() {
