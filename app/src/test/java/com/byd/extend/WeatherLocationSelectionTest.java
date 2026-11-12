@@ -67,8 +67,12 @@ public final class WeatherLocationSelectionTest {
     public void selectsFreshKyivOverOlderNativeLimaFix() {
         long nowNanos = 16_193_272_020_801L;
 
-        assertEquals(1, WeatherLocationSelection.selectIndex(nowNanos,
-                12_676_503_367_663L, 16_193_271_020_801L));
+        WeatherLocationSources sources = new WeatherLocationSources();
+        sources.accept(new WeatherLocationSources.Fix("gps", "gps", false, true,
+                -12, -77, 5, 12_676_503_367_663L / 1_000_000, 1), nowNanos / 1_000_000);
+        sources.accept(new WeatherLocationSources.Fix("network", "network", false, false,
+                50, 30, 100, 16_193_271_020_801L / 1_000_000, 1), nowNanos / 1_000_000);
+        assertEquals("network", sources.select(nowNanos / 1_000_000, null).source);
     }
 
     @Test
@@ -89,36 +93,8 @@ public final class WeatherLocationSelectionTest {
         assertEquals("invalid_elapsed", WeatherLocationSelection.rejectionReason(-1L, nowNanos));
         assertEquals("future_elapsed", WeatherLocationSelection.rejectionReason(nowNanos + 1L,
                 nowNanos));
-        assertEquals(-1, WeatherLocationSelection.selectIndex(nowNanos,
-                0L, -1L, nowNanos + 1L,
-                nowNanos - WeatherLocationSelection.MAX_AGE_NANOS - 1L));
+        assertEquals("stale", WeatherLocationSelection.rejectionReason(
+                nowNanos - WeatherLocationSelection.MAX_AGE_NANOS - 1L, nowNanos));
     }
 
-    @Test
-    public void selectsNewestRegardlessOfPositionAndKeepsEarlierEqualCandidate() {
-        assertEquals(1, WeatherLocationSelection.selectIndex(5_000_000_000L,
-                3_000_000_000L, 4_000_000_000L, 2_000_000_000L));
-        assertEquals(2, WeatherLocationSelection.selectIndex(5_000_000_000L,
-                2_000_000_000L, 3_000_000_000L, 4_000_000_000L));
-        assertEquals(0, WeatherLocationSelection.selectIndex(1_000L, 800L, 800L));
-    }
-
-    @Test
-    public void replacesOnlyWhenCandidateIsNewerOrCurrentIsExpired() {
-        long nowNanos = 10_000L;
-
-        assertFalse(WeatherLocationSelection.shouldReplace(9_000L, 9_500L, nowNanos));
-        assertFalse(WeatherLocationSelection.shouldReplace(9_500L, 9_500L, nowNanos));
-        assertFalse(WeatherLocationSelection.shouldReplace(0L, 9_500L, nowNanos));
-        assertTrue(WeatherLocationSelection.shouldReplace(9_600L, 9_500L, nowNanos));
-        assertTrue(WeatherLocationSelection.shouldReplace(9_000L, 10_001L, nowNanos));
-        assertFalse(WeatherLocationSelection.shouldReplace(10_001L, 9_500L, nowNanos));
-
-        long boundaryNowNanos = WeatherLocationSelection.MAX_AGE_NANOS + 10_000L;
-        assertTrue(WeatherLocationSelection.shouldReplace(boundaryNowNanos,
-                boundaryNowNanos - WeatherLocationSelection.MAX_AGE_NANOS - 1L,
-                boundaryNowNanos));
-        assertFalse(WeatherLocationSelection.shouldReplace(1L,
-                boundaryNowNanos - 10L, boundaryNowNanos));
-    }
 }
