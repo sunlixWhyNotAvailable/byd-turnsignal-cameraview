@@ -51,19 +51,19 @@ data class DistanceWidgetProfile(
 data class DistanceWidgetSettings(
     val enabled: Boolean = false,
     val zones: List<DistanceZone> = listOf(
-        DistanceZone(0, 30, 0xFFFF5656.toInt()),
-        DistanceZone(1, 60, 0xFFFF982E.toInt()),
-        DistanceZone(2, 100, 0xFFF2C34E.toInt()),
-        DistanceZone(3, 150, 0xFF54D898.toInt()),
+        DistanceZone(0, 25, 0xFFFF5656.toInt()),
+        DistanceZone(1, 50, 0xFFFF982E.toInt()),
+        DistanceZone(2, 75, 0xFFF2C34E.toInt()),
+        DistanceZone(3, 100, 0xFF54D898.toInt()),
     ),
-    val showDistance: Boolean = true,
+    val showDistance: Boolean = false,
     val carModel: String = "uke",
     val carColor: String = "white",
     val target: DistanceTarget = DistanceTarget.Tablet,
     val format: DistanceDisplayFormat = DistanceDisplayFormat.Obstacles,
-    val tablet: DistanceWidgetProfile = DistanceWidgetProfile(),
+    val tablet: DistanceWidgetProfile = DistanceWidgetProfile(sizePercent = 50, transparency = 30,
+        borderColor = 0xFF54D898.toInt(), x = 0f, y = 56f, backgroundPercent = 80),
     val cluster: DistanceWidgetProfile = DistanceWidgetProfile(),
-    val binding: DistanceBinding = DistanceBinding(),
     val hiddenByButton: Boolean = false,
 ) {
     val profile get() = if (target == DistanceTarget.Tablet) tablet else cluster
@@ -113,8 +113,6 @@ data class DistanceWidgetSettings(
         put("format", format.name)
         put("tablet", tablet.encode())
         put("cluster", cluster.encode())
-        put("keyCode", binding.keyCode)
-        put("press", binding.press.name)
         put("hiddenByButton", hiddenByButton)
         put("zones", JSONArray().apply {
             zones.forEach { zone -> put(JSONObject().apply {
@@ -136,7 +134,7 @@ data class DistanceWidgetSettings(
             val car = DistanceCarCatalog.resolve(data.optString("carModel", "uke"), data.optString("carColor", "white"))
             // The old single appearance initializes both displays without discarding user edits.
             val legacy = DistanceWidgetProfile.decode(data)
-            val press = DistancePress.entries.firstOrNull { it.name == data.optString("press") } ?: DistancePress.Single
+            // Older files may still carry keyCode/press: the button belongs to CameraButtonBindings.
             return DistanceWidgetSettings(enabled = data.getBoolean("enabled"), zones = zones,
                 showDistance = data.optBoolean("showDistance", true), carModel = car.model, carColor = car.color,
                 target = DistanceTarget.entries.firstOrNull { it.name == data.optString("target") } ?: DistanceTarget.Tablet,
@@ -144,12 +142,9 @@ data class DistanceWidgetSettings(
                     ?: DistanceDisplayFormat.Obstacles,
                 tablet = data.optJSONObject("tablet")?.let(DistanceWidgetProfile::decode) ?: legacy,
                 cluster = data.optJSONObject("cluster")?.let(DistanceWidgetProfile::decode) ?: legacy,
-                binding = DistanceBinding(data.optInt("keyCode", -1), press),
                 hiddenByButton = data.optBoolean("hiddenByButton", false))
         }
     }
 }
 
 enum class DistanceTarget { Tablet, Cluster }
-enum class DistancePress { Single, Hold, Double }
-data class DistanceBinding(val keyCode: Int = -1, val press: DistancePress = DistancePress.Single)

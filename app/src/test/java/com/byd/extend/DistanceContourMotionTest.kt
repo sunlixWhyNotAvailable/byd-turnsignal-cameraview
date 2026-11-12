@@ -5,7 +5,7 @@ import org.junit.Test
 
 /** Controlled sector/time inputs exercise the actual presentation engine, not an OEM substitute. */
 class DistanceContourMotionTest {
-    private val settings = DistanceWidgetSettings()
+    private val settings = distanceFixtureSettings
     private fun objectValue(id: Int?, vararg sectors: Pair<Int, Double>, token: Long = 1, type: Int = 1): DistanceObject {
         val values = DoubleArray(8) { Double.NaN }
         sectors.forEach { (sector, cm) -> values[sector] = cm }

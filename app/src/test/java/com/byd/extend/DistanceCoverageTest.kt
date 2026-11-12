@@ -3,9 +3,14 @@ package com.byd.extend
 import org.junit.Assert.*
 import org.junit.Test
 
+/** Fixtures reach 150 cm, so their zones stay fixed when the user-facing defaults change. */
+internal val distanceFixtureSettings = DistanceWidgetSettings(zones = listOf(
+    DistanceZone(0, 30, 0xFFFF5656.toInt()), DistanceZone(1, 60, 0xFFFF982E.toInt()),
+    DistanceZone(2, 100, 0xFFF2C34E.toInt()), DistanceZone(3, 150, 0xFF54D898.toInt())))
+
 /** Coordinates enter the real model, continuity, fusion and shared contour engine. */
 class DistanceCoverageTest {
-    private val settings = DistanceWidgetSettings()
+    private val settings = distanceFixtureSettings
     private val continuity = DistanceObjectContinuity()
     private fun box(id: Int, x: Double, y: Double, length: Double = 10.0, width: Double = 10.0) =
         AdasDistanceModel.Obstacle(id, 2, x, y, length, width, 0.0)

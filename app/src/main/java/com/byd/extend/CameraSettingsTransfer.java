@@ -127,6 +127,8 @@ public final class CameraSettingsTransfer {
             JSONObject settingsObject = root.getJSONObject(SETTINGS);
             Set<String> expected = cameraPresetKeys();
             Set<String> actual = names(settingsObject);
+            // Older files carried the distance-widget button; buttons are not configuration.
+            actual.removeAll(DistanceWidgetStore.BUTTON_KEYS);
             for (String key : actual) {
                 if (!expected.contains(key)) {
                     throw new IllegalArgumentException("unexpected camera preset field");
@@ -1658,7 +1660,6 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isIntegerKey(String key) {
-        if (key.equals("distance_widget_key_code")) return true;
         return key.endsWith("_strength_percent") || (!key.endsWith("_frame_aspect") && key.endsWith("_aspect"))
                 || key.endsWith("_rotation") || key.endsWith("_rotation_mode")
                 || key.endsWith("_rotation_degrees") || key.endsWith("_display_mode") || key.endsWith("_fov")
@@ -2022,7 +2023,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isStringKey(String key) {
-        if (DistanceWidgetStore.transferKeys().contains(key)) return !key.equals(DistanceWidgetStore.ENABLED) && !key.equals("distance_widget_key_code");
+        if (DistanceWidgetStore.transferKeys().contains(key)) return !key.equals(DistanceWidgetStore.ENABLED);
         return RearviewMirrorSettings.PREF_TARGET.equals(key);
     }
 

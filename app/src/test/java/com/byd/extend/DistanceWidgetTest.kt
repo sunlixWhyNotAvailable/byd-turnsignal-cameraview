@@ -64,10 +64,10 @@ class DistanceWidgetTest {
 
     @Test fun visibilityUsesRawThresholdsAndManualHideSurvivesModeChanges() {
         val settings=DistanceWidgetSettings(enabled=true)
-        assertEquals(0, settings.zoneAt(30.0)?.id)
-        assertEquals(1, settings.zoneAt(30.001)?.id)
-        assertEquals(3, settings.zoneAt(150.0)?.id)
-        assertNull(settings.zoneAt(150.001)); assertNull(settings.zoneAt(Double.NaN))
+        assertEquals(0, settings.zoneAt(25.0)?.id)
+        assertEquals(1, settings.zoneAt(25.001)?.id)
+        assertEquals(3, settings.zoneAt(100.0)?.id)
+        assertNull(settings.zoneAt(100.001)); assertNull(settings.zoneAt(Double.NaN))
         assertFalse(settings.visible(true,true,List(8){null}))
         assertTrue(settings.copy(format=DistanceDisplayFormat.Always).visible(true,true,List(8){null}))
         assertFalse(settings.visible(false,true,listOf(10.0)))
@@ -124,15 +124,21 @@ class DistanceWidgetTest {
         CameraButtonBindings.save(prefs,CameraButtonBindings.Action.DistanceVisibility,
             CameraButtonBindings.Binding(305,CameraButtonBindings.Press.Double))
         DistanceWidgetStore.savePreset(prefs)
+        assertFalse(JSONObject(prefs.getString(DistanceWidgetStore.PRESET,null)!!).has("keyCode"))
         DistanceWidgetStore.applyPreset(context,true)
-        assertEquals(100,DistanceWidgetStore.read(prefs).tablet.backgroundPercent)
+        assertEquals(DistanceWidgetSettings().tablet,DistanceWidgetStore.read(prefs).tablet)
+        assertEquals(80,DistanceWidgetStore.read(prefs).tablet.backgroundPercent)
         assertEquals(100,DistanceWidgetStore.read(prefs).cluster.backgroundPercent)
         assertTrue(DistanceWidgetStore.read(prefs).hiddenByButton)
         assertTrue(prefs.contains(DistanceWidgetStore.PRESET))
+        val button=CameraButtonBindings.load(prefs,CameraButtonBindings.Action.DistanceVisibility)
+        assertEquals(305,button.keyCode); assertEquals(CameraButtonBindings.Press.Double,button.press)
+        CameraButtonBindings.reset(prefs,CameraButtonBindings.Action.DistanceVisibility)
         DistanceWidgetStore.applyPreset(context,false)
         val reopened=DistanceWidgetStore.read(context.getSharedPreferences("settings",0))
         assertEquals(chosen.tablet,reopened.tablet); assertEquals(chosen.cluster,reopened.cluster)
-        assertEquals(DistancePress.Double,reopened.binding.press)
+        assertEquals(CameraButtonBindings.UNASSIGNED,
+            CameraButtonBindings.load(prefs,CameraButtonBindings.Action.DistanceVisibility).keyCode)
         assertTrue(reopened.enabled); assertTrue(reopened.hiddenByButton)
         val helper=CameraRuntimePreferences()
         helper.reconcile(prefs.all,true)
@@ -146,12 +152,32 @@ class DistanceWidgetTest {
             tablet=DistanceWidgetProfile(backgroundPercent=70),cluster=DistanceWidgetProfile(x=80f,backgroundPercent=85))
         DistanceWidgetStore.save(context,chosen); DistanceWidgetStore.savePreset(prefs)
         prefs.edit().putBoolean(DistanceWidgetStore.HIDDEN,true).commit()
+        val distanceButton=CameraButtonBindings.Action.DistanceVisibility
+        CameraButtonBindings.save(prefs,distanceButton,CameraButtonBindings.Binding(305,CameraButtonBindings.Press.Hold))
         val exported=CameraSettingsTransfer.exportCameraPreset(context,prefs)
+        val exportedSettings=JSONObject(exported).getJSONObject("settings")
+        DistanceWidgetStore.BUTTON_KEYS.forEach { assertFalse(it,exportedSettings.has(it)) }
+        for (key in listOf(DistanceWidgetStore.CONFIG,DistanceWidgetStore.PRESET)) {
+            val widget=JSONObject(exportedSettings.getString(key))
+            assertFalse(widget.has("keyCode")); assertFalse(widget.has("press"))
+        }
         val destination=context.getSharedPreferences("restored",0)
+        CameraButtonBindings.save(destination,distanceButton,CameraButtonBindings.Binding(88,CameraButtonBindings.Press.Single))
         CameraSettingsTransfer.applyCameraPreset(destination,CameraSettingsTransfer.parseCameraPreset(exported))
         assertEquals(chosen,DistanceWidgetStore.read(destination))
         assertTrue(destination.contains(DistanceWidgetStore.PRESET))
         assertFalse(destination.contains(DistanceWidgetStore.HIDDEN))
+        assertEquals(88,CameraButtonBindings.load(destination,distanceButton).keyCode)
+        // An older file still carries the button: it imports, but the button stays local.
+        exportedSettings.put("distance_widget_key_code",305).put("distance_widget_press","Hold")
+            .put("distance_widget_press_android","Hold").put("distance_widget_source","AndroidKey")
+            .put(DistanceWidgetStore.CONFIG,JSONObject(exportedSettings.getString(DistanceWidgetStore.CONFIG))
+                .put("keyCode",305).put("press","Hold").toString())
+        val oldFile=JSONObject(exported).put("settings",exportedSettings).toString()
+        CameraSettingsTransfer.applyCameraPreset(destination,CameraSettingsTransfer.parseCameraPreset(oldFile))
+        assertEquals(chosen,DistanceWidgetStore.read(destination))
+        val kept=CameraButtonBindings.load(destination,distanceButton)
+        assertEquals(88,kept.keyCode); assertEquals(CameraButtonBindings.Press.Single,kept.press)
         val old=CameraSettingsTransfer.exportCameraPreset(prefs)
         CameraSettingsTransfer.applyCameraPreset(prefs,CameraSettingsTransfer.parseCameraPreset(old))
         assertEquals(chosen.copy(hiddenByButton=true),DistanceWidgetStore.read(prefs))
@@ -159,9 +185,8 @@ class DistanceWidgetTest {
         assertEquals(chosen.copy(hiddenByButton=true),DistanceWidgetStore.read(prefs))
         val config=JSONObject(CompatibilityBundleExporter.sanitizedPreferences(prefs))
         assertEquals(chosen,DistanceWidgetSettings.decode(config.getString(DistanceWidgetStore.CONFIG)))
-        assertThrows(IllegalArgumentException::class.java) {
-            CameraSettingsTransfer.parseLegacySettings("<map><string name=\"distance_widget_source\">Sos</string></map>")
-        }
+        assertTrue(CameraSettingsTransfer.parseLegacySettings(
+            "<map><string name=\"distance_widget_source\">Sos</string></map>").isEmpty())
         prefs.edit().putBoolean("parking_front_enabled",true).commit()
         assertFalse(CameraHelperService.anyParkingEnabled(prefs)); assertFalse(DistanceWidgetStore.read(prefs).enabled)
     }

@@ -687,6 +687,7 @@ final class CompatibilityBundleExporter {
                 || key.contains("personal")) return false;
         return key.equals(com.byd.extend.remote.ViewerQuality.PREFERENCE_KEY)
                 || DistanceWidgetStore.transferKeys().contains(key)
+                || DistanceWidgetStore.BUTTON_KEYS.contains(key)
                 || key.equals(RemoteCameraView.INITIAL_VIEW_PREFERENCE_KEY)
                 || key.equals(RemoteCameraView.PREFERENCE_KEY)
                 || key.equals(RemoteCameraView.MIRROR_CABIN_PREFERENCE_KEY)
