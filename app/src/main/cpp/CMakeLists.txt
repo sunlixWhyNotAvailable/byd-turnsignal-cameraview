@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(motion_yuv LANGUAGES CXX)
+add_library(oem_adb SHARED oem_adb.cpp)
+target_link_libraries(oem_adb dl)
+target_compile_features(oem_adb PRIVATE cxx_std_17)
+target_compile_options(oem_adb PRIVATE -Wall -Wextra -Werror)
+
 add_library(motion_yuv SHARED motion_yuv.cpp motion_hardware.cpp)
 target_link_libraries(motion_yuv android EGL GLESv2 log dl)
 target_compile_features(motion_yuv PRIVATE cxx_std_17)

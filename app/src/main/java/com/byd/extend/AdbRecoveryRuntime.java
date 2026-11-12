@@ -12,6 +12,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 
+import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -60,6 +61,9 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     private final AtomicBoolean queued = new AtomicBoolean();
     private final AtomicBoolean dirty = new AtomicBoolean();
     private final AdbRecoveryCoordinator coordinator;
+    private final OemAdbRecovery oem;
+    private final AtomicBoolean oemRetryRequested = new AtomicBoolean();
+    private volatile OemAdbRecovery.Attempt oemAttempt;
     private final ConnectivityManager connectivity;
     private final ConnectivityManager.NetworkCallback networkCallback;
     private volatile boolean closed;
@@ -77,9 +81,12 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     private final Runnable authorizationListener = () -> {
         if (closed) return;
         if (LocalAdbClient.AUTHORIZATION.pending()) {
+            cancelOemForAuthorization();
             waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
         } else enqueue(Reason.RECONFIGURE);
     };
+
+    private void cancelOemForAuthorization() { oem.cancel(this, "foreground_rsa", false); }
 
     private final Runnable consentRetry = () -> {
         if (!closed && !consentPaused) enqueue(Reason.RECONFIGURE);
@@ -95,6 +102,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         settings = this.context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE);
         state = this.context.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE);
         coordinator = new AdbRecoveryCoordinator(new PreferenceStore(state));
+        oem = OemAdbRecovery.get(this.context);
         connectivity = (ConnectivityManager) this.context
                 .getSystemService(Context.CONNECTIVITY_SERVICE);
         networkCallback = new ConnectivityManager.NetworkCallback() {
@@ -106,16 +114,22 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             }
         };
         LocalAdbClient.AUTHORIZATION.addListener(authorizationListener);
+        oem.observe(this, (attempt, completed, late) -> onOemFinished(attempt, Reason.RECONFIGURE, false, true));
     }
 
     public void startOrReconfigure(Reason reason) {
         if (closed) return;
+        // Preserve this event even when higherPriority coalesces it with ADB_FAILURE.
+        if (reason == Reason.BOOT || reason == Reason.WAKE || reason == Reason.MANUAL) {
+            oemRetryRequested.set(true);
+        }
         ensureNetworkCallback();
         enqueue(reason == null ? Reason.RECONFIGURE : reason);
     }
 
     /** Immediate user request; it never performs a forced 0-to-1 bounce. */
     public void retryWifi() {
+        oemRetryRequested.set(true);
         enqueue(Reason.MANUAL);
     }
 
@@ -143,12 +157,14 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     /** Turns the feature off and cancels app-owned work; it does not revoke access or stop ADB. */
     public void disable() {
         settings.edit().putBoolean(RECOVERY_ENABLED, false).apply();
+        oem.cancel(this, "disabled", false);
         execute(this::applyDisabled);
     }
 
     @Override public void close() {
         if (closed) return;
         closed = true;
+        oem.cancel(this, "runtime_closed", true);
         LocalAdbClient.AUTHORIZATION.removeListener(authorizationListener);
         mainHandler.removeCallbacks(consentRetry);
         closeDiscovery();
@@ -189,6 +205,11 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             return;
         }
         if (deferForPrerequisite()) return;
+        OemAdbRecovery.Attempt pending = oemAttempt;
+        if (pending != null && pending.waiting()) {
+            oemRetryRequested.set(false);
+            return;
+        }
         try (AdbAuthorizationSession.RecoveryOperation admitted =
                      LocalAdbClient.AUTHORIZATION.beginRecovery()) {
             if (admitted == null) {
@@ -202,7 +223,9 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
 
     private void recoverAdmitted(Reason reason) {
         boolean wasReady = coordinator.snapshot().authenticated5555();
-        if (wasReady && !AdbRecoveryPolicy.shouldRevalidateReady(reason)) {
+        if (wasReady && !AdbRecoveryPolicy.shouldRevalidateReady(reason)
+                && !(state.getBoolean(TLS_OWNED, false)
+                     && AppPermissionProvisioner.hasWriteSecureSettings(context))) {
             publish();
             return;
         }
@@ -237,51 +260,90 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             return;
         }
 
-        boolean prepared = proof == AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE;
-        if (prepared) {
-            coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
-            publish();
+        if (proof == AdbRecoveryPolicy.Proof.AVAILABLE) {
+            finishClassicRecovery(preserveReady, reason);
+            return;
         }
+        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+        publish();
+        boolean explicitRetry = oemRetryRequested.getAndSet(false);
+        try {
+            OemAdbRecovery.Attempt started = oem.start(coordinator.snapshot().cycleId(), explicitRetry,
+                    this, (attempt, completed, late) -> onOemFinished(attempt, reason, completed, late), log);
+            if (started != null) {
+                oemAttempt = started;
+                cancelConsentRetry();
+                closeDiscovery();
+                return;
+            }
+        } catch (IOException | RuntimeException error) {
+            failure("adb_oem_start_failed", "oem_admission", error);
+        }
+        continueLegacyRecovery(reason);
+    }
+
+    private void onOemFinished(OemAdbRecovery.Attempt attempt, Reason reason, boolean completed, boolean late) {
+        execute(() -> {
+            coordinator.configure(settings.getBoolean(RECOVERY_ENABLED, false));
+            attempt.event(late ? "adb_oem_late_completion" : completed ? "adb_oem_completed"
+                            : "deadline".equals(attempt.ticket.invalidation()) ? "adb_oem_deadline" : "adb_oem_yielded",
+                    "reason", attempt.ticket.invalidation(), "mutation_unresolved", attempt.mutationOutstanding);
+            if (late) {
+                if (oemAttempt != null && oemAttempt != attempt) return;
+            } else {
+                if (oemAttempt != attempt) return;
+                oemAttempt = null;
+            }
+            if (deferForPrerequisite()) return;
+            try (AdbAuthorizationSession.RecoveryOperation admitted = LocalAdbClient.AUTHORIZATION.beginRecovery()) {
+                if (admitted == null) return;
+                operation = admitted;
+                boolean wasReady = coordinator.snapshot().authenticated5555();
+                AdbRecoveryPolicy.Proof proof = completed && !late
+                        ? proveAfterUsbEnableTransition() : freshClassicProof();
+                if (proof == null || deferForPrerequisite()) return;
+                if (proof == AdbRecoveryPolicy.Proof.AVAILABLE) {
+                    finishClassicRecovery(wasReady, reason);
+                } else {
+                    if (wasReady) beginFailedRevalidation(reason, proof);
+                    if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
+                        waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
+                    } else if (proof == AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE) {
+                        continueLegacyRecovery(late ? Reason.RECONFIGURE : reason);
+                    } else blocked("classic_proof_after_oem_failed");
+                }
+            } finally { operation = null; }
+        });
+    }
+
+    private void continueLegacyRecovery(Reason reason) {
+        if (deferForWifiPermissions()) return;
         SettingResult adbEnabled = ensureGlobalSetting(ADB_ENABLED, 1, false);
         if (!adbEnabled.verified) {
             blocked("adb_enabled_write_failed");
             return;
         }
         if (adbEnabled.transitionedTo(1)) {
-            if (!prepared && !preserveReady) {
-                coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
-                publish();
-                prepared = true;
-            }
-            proof = proveAfterUsbEnableTransition();
+            AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition();
             if (proof == null || deferForPrerequisite()) return;
-        }
-        if (proof != AdbRecoveryPolicy.Proof.AVAILABLE && preserveReady) {
-            beginFailedRevalidation(reason, proof);
-            preserveReady = false;
-            prepared = false;
-        }
-        if (proof == AdbRecoveryPolicy.Proof.AVAILABLE) {
-            finishClassicRecovery(preserveReady, reason);
-            return;
-        }
-        if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
-            waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
-            return;
-        }
-        if (proof != AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE) {
-            blocked("classic_proof_failed");
-            return;
-        }
-        if (!prepared) {
-            coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
-            publish();
+            if (proof == AdbRecoveryPolicy.Proof.AVAILABLE) {
+                finishClassicRecovery(false, reason);
+                return;
+            }
+            if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
+                waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
+                return;
+            }
+            if (proof != AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE) {
+                blocked("classic_proof_failed");
+                return;
+            }
         }
         continueWirelessRecovery(reason);
     }
 
     private void continueWirelessRecovery(Reason reason) {
-        if (deferForPrerequisite()) return;
+        if (deferForWifiPermissions()) return;
         boolean wifi = wifiConnected();
         coordinator.wifi(wifi, SystemClock.elapsedRealtime());
         publish();
@@ -314,53 +376,59 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     private void finishClassicRecovery(boolean preserveReady, Reason revalidationReason) {
         if (deferForPrerequisite()) return;
         boolean tlsOwned = state.getBoolean(TLS_OWNED, false);
-        SettingResult adbEnabled = ensureGlobalSetting(ADB_ENABLED, 1, false);
-        if (!adbEnabled.verified) {
-            blocked("adb_enabled_write_failed");
-            return;
-        }
-        if (adbEnabled.transitionedTo(1)) {
-            if (!preserveReady) {
-                coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
-                publish();
+        if (AppPermissionProvisioner.hasWriteSecureSettings(context)) {
+            SettingResult adbEnabled = ensureGlobalSetting(ADB_ENABLED, 1, false);
+            if (!adbEnabled.verified) {
+                blocked("adb_enabled_write_failed");
+                return;
             }
-            AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition();
-            if (proof == null || deferForPrerequisite()) return;
-            if (proof != AdbRecoveryPolicy.Proof.AVAILABLE) {
-                if (preserveReady) beginFailedRevalidation(revalidationReason, proof);
-                if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
-                    waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
-                } else if (proof == AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE) {
+            if (adbEnabled.transitionedTo(1)) {
+                if (!preserveReady) {
                     coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
                     publish();
-                    continueWirelessRecovery(revalidationReason);
-                } else {
-                    blocked("classic_proof_failed");
                 }
-                return;
+                AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition();
+                if (proof == null || deferForPrerequisite()) return;
+                if (proof != AdbRecoveryPolicy.Proof.AVAILABLE) {
+                    if (preserveReady) beginFailedRevalidation(revalidationReason, proof);
+                    if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
+                        waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
+                    } else if (proof == AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE) {
+                        coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
+                        publish();
+                        continueWirelessRecovery(revalidationReason);
+                    } else {
+                        blocked("classic_proof_failed");
+                    }
+                    return;
+                }
             }
-        }
-        if (tlsOwned) {
-            if (!AdbRecoveryPolicy.mayCleanupOwnedTls(tlsOwned, adbEnabled.verified, true)) {
-                blocked("owned_tls_cleanup_failed");
-                return;
+            if (tlsOwned) {
+                if (!AdbRecoveryPolicy.mayCleanupOwnedTls(tlsOwned, adbEnabled.verified, true)) {
+                    blocked("owned_tls_cleanup_failed");
+                    return;
+                }
+                coordinator.stage(AdbRecoverySnapshot.Stage.CLEANING_UP);
+                publish();
+                if (!ensureGlobalSetting(ADB_WIFI_ENABLED, 0, false).verified
+                        || readGlobal(ADB_WIFI_ENABLED) != 0) {
+                    blocked("owned_tls_cleanup_failed");
+                    return;
+                }
+                state.edit().putBoolean(TLS_OWNED, false).commit();
+                coordinator.stage(AdbRecoverySnapshot.Stage.VERIFYING_5555);
+                publish();
+                if (freshClassicProof() != AdbRecoveryPolicy.Proof.AVAILABLE) {
+                    blocked("classic_proof_after_cleanup_failed");
+                    return;
+                }
             }
-            coordinator.stage(AdbRecoverySnapshot.Stage.CLEANING_UP);
-            publish();
-            if (!ensureGlobalSetting(ADB_WIFI_ENABLED, 0, false).verified
-                    || readGlobal(ADB_WIFI_ENABLED) != 0) {
-                blocked("owned_tls_cleanup_failed");
-                return;
-            }
-            state.edit().putBoolean(TLS_OWNED, false).commit();
-            coordinator.stage(AdbRecoverySnapshot.Stage.VERIFYING_5555);
-            publish();
-            if (freshClassicProof() != AdbRecoveryPolicy.Proof.AVAILABLE) {
-                blocked("classic_proof_after_cleanup_failed");
-                return;
-            }
+        } else if (tlsOwned) {
+            log.log("adb_owned_tls_cleanup_deferred", "reason", "wss_not_granted");
         }
         if (deferForPrerequisite()) return;
+        try { oem.restored(); }
+        catch (IOException error) { failure("adb_oem_state_failed", "reset_after_restored", error); }
         cancelConsentRetry();
         closeDiscovery();
         if (preserveReady) coordinator.stage(AdbRecoverySnapshot.Stage.READY);
@@ -731,6 +799,8 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     }
 
     private void applyDisabled() {
+        oem.cancel(this, "disabled", false);
+        oemAttempt = null;
         cancelConsentRetry();
         closeDiscovery();
         consentPaused = false;
@@ -761,8 +831,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         }
         boolean pending = LocalAdbClient.AUTHORIZATION.pending();
         AdbRecoverySnapshot.Stage prerequisite = AdbRecoveryPolicy.prerequisite(pending,
-                !pending && LocalAdbClient.hasAuthorizedIdentity(context, log::log),
-                AppPermissionProvisioner.hasWriteSecureSettings(context));
+                !pending && LocalAdbClient.hasAuthorizedIdentity(context, log::log));
         if (prerequisite != null) {
             waitForPrerequisite(prerequisite);
             return true;
@@ -773,6 +842,13 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         }
         lastPrerequisite = null;
         return false;
+    }
+
+    private boolean deferForWifiPermissions() {
+        if (deferForPrerequisite()) return true;
+        if (AppPermissionProvisioner.hasWriteSecureSettings(context)) return false;
+        waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS);
+        return true;
     }
 
     private void waitForPrerequisite(AdbRecoverySnapshot.Stage stage) {

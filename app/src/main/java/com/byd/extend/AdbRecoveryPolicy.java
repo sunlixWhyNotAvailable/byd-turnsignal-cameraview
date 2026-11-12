@@ -47,11 +47,11 @@ final class AdbRecoveryPolicy {
     }
 
     static AdbRecoverySnapshot.Stage prerequisite(boolean authorizationPending,
-            boolean authorizedIdentity, boolean hasWss) {
+            boolean authorizedIdentity) {
         if (authorizationPending || !authorizedIdentity) {
             return AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION;
         }
-        return hasWss ? null : AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS;
+        return null;
     }
 
     static Proof classifyProof(LocalAdbClient.Result result, String marker) {
