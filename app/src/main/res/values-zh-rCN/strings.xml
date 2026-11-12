@@ -285,7 +285,6 @@
     <string name="runtime_avas_import_failed">音频导入失败。</string>
     <string name="runtime_avas_action_failed">无法更新 AVAS 设置。</string>
     <string name="runtime_wifi_retention_update_failed">无法更新车辆熄火后保持 Wi-Fi 的设置。</string>
-    <string name="runtime_avas_command_failed">AVAS 命令失败：%1$s</string>
     <string name="update_hint_title">新版本提示悬浮窗</string>
     <string name="update_hint_description">检测到新版本时显示提示 10 秒</string>
     <string name="update_hint_message">有新版本可供更新</string>

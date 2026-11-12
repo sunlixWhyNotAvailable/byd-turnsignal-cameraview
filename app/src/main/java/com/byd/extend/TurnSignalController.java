@@ -2141,7 +2141,7 @@ final class TurnSignalController {
                             "helper_pid", current.pid);
                     attach(current);
                 } else {
-                    launchFailed(error, authorization.transportUnavailable);
+                    launchFailed(error, authorization.transportFailed());
                 }
                 return;
             }
@@ -2168,7 +2168,7 @@ final class TurnSignalController {
             if (!shouldAwaitHelperReadiness(launch)) {
                 launchFailed("helper_launch_failed: " + launch.error
                         + (launch.output.isEmpty() ? "" : ": " + launch.output),
-                        launch.transportUnavailable);
+                        launch.transportFailed());
                 return;
             }
             if (launch.commandReadTimeout) {

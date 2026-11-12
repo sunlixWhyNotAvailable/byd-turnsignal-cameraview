@@ -396,7 +396,11 @@ final class LocalAdbClient {
         } catch (HandshakeFailureException failure) {
             return failure.result;
         } catch (Throwable error) {
-            return Result.failed(summary(error), "", -1, "unavailable");
+            // Keep the transport class so callers can resume as soon as ADB is restored.
+            Result failed = error instanceof TransportUnavailableException
+                    ? Result.transportUnavailable(summary(error))
+                    : Result.failed(summary(error), "", -1, "unavailable");
+            return failed.withCause(error);
         } finally {
             if (connection != null) connection.close();
         }

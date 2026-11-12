@@ -12209,12 +12209,9 @@ public final class CameraProbeActivity extends ComponentActivity
         }
         if (productionUi != null) productionUi.refreshAvasState();
         String detail = event.optString("error");
+        // Technical AVAS failures belong to the logs, not to a user toast.
         record("avas_ui_error", "stage", stage, "profile_id", profileId,
                 "asset_id", event.optString("asset_id"), "error", detail);
-        if (!activityDestroyed && !isFinishing()) {
-            Toast.makeText(this, runtimeText(R.string.runtime_avas_command_failed,
-                    detail.isEmpty() ? stage : detail), Toast.LENGTH_LONG).show();
-        }
     }
 
     private void handleActivityCameraShellDied(JSONObject event) {

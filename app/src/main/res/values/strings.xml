@@ -285,7 +285,6 @@
     <string name="runtime_avas_import_failed">Audio import failed.</string>
     <string name="runtime_avas_action_failed">Unable to update AVAS settings.</string>
     <string name="runtime_wifi_retention_update_failed">Unable to update Wi-Fi retention settings.</string>
-    <string name="runtime_avas_command_failed">AVAS command failed: %1$s</string>
     <string name="update_hint_title">New version hint widget</string>
     <string name="update_hint_description">Show a hint for 10 seconds when a check finds an update</string>
     <string name="update_hint_message">A new version is available to update</string>
