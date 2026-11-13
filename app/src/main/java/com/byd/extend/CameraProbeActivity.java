@@ -2427,11 +2427,16 @@ public final class CameraProbeActivity extends ComponentActivity
                 || snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING) {
             status = runtimeText(R.string.update_dialog_downloading);
         } else if (snapshot.phase == UpdateHintRuntime.DownloadPhase.FAILED) {
-            status = runtimeText(R.string.update_dialog_download_failed,
-                    snapshot.error == null ? "" : snapshot.error);
-            record("update_failed", "error", snapshot.error == null ? "unknown" : snapshot.error);
+            // The user sees only localized text; the raw English diagnostic goes to the log.
+            status = runtimeText(updateFailureText(snapshot.failure,
+                    R.string.update_dialog_download_failed));
+            record("update_failed", "reason", String.valueOf(snapshot.failure),
+                    "error", snapshot.error == null ? "unknown" : snapshot.error);
         } else if (snapshot.installerError) {
-            status = runtimeText(R.string.update_dialog_installer_error);
+            status = runtimeText(updateFailureText(snapshot.failure,
+                    R.string.update_dialog_installer_error));
+            record("update_install_failed", "reason", String.valueOf(snapshot.failure),
+                    "error", snapshot.error == null ? "unknown" : snapshot.error);
         }
         Float progress = downloading ? snapshot.progress / 100f : null;
         boolean shown = showUpdateRuntimeDialog(kind,
@@ -10606,6 +10611,16 @@ public final class CameraProbeActivity extends ComponentActivity
     private String runtimeText(int id, Object... args) {
         Context localized = AppLanguage.localizedContext(this, runtimeLanguage());
         return args.length == 0 ? localized.getString(id) : localized.getString(id, args);
+    }
+
+    static int updateFailureText(AppUpdateManager.Failure failure, int fallback) {
+        if (failure == AppUpdateManager.Failure.SIGNER_UNAVAILABLE) {
+            return R.string.update_dialog_signer_unavailable;
+        }
+        if (failure == AppUpdateManager.Failure.SIGNER_MISMATCH) {
+            return R.string.update_dialog_signer_mismatch;
+        }
+        return fallback;
     }
 
     /** Lifecycle status text follows the selected app language while logs retain raw events. */

@@ -102,15 +102,19 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
         final boolean dialogVisible;
         final boolean initialInstallerHandoffEligible;
         final boolean initialInstallerHandoffAttempted;
+        /** User-facing failure category; {@link #error} keeps the raw English diagnostic. */
+        final AppUpdateManager.Failure failure;
 
         DownloadSnapshot(AppUpdateManager.UpdateInfo info, DownloadPhase phase, int progress,
                 File file, String error, boolean installerError, boolean dialogVisible) {
-            this(info, phase, progress, file, error, installerError, dialogVisible, false, false);
+            this(info, phase, progress, file, error, installerError, dialogVisible, false, false,
+                    null);
         }
 
         private DownloadSnapshot(AppUpdateManager.UpdateInfo info, DownloadPhase phase, int progress,
                 File file, String error, boolean installerError, boolean dialogVisible,
-                boolean initialInstallerHandoffEligible, boolean initialInstallerHandoffAttempted) {
+                boolean initialInstallerHandoffEligible, boolean initialInstallerHandoffAttempted,
+                AppUpdateManager.Failure failure) {
             this.info = info;
             this.phase = phase;
             this.progress = progress;
@@ -120,29 +124,36 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
             this.dialogVisible = dialogVisible;
             this.initialInstallerHandoffEligible = initialInstallerHandoffEligible;
             this.initialInstallerHandoffAttempted = initialInstallerHandoffAttempted;
+            this.failure = failure;
         }
 
         DownloadSnapshot withProgress(int value) {
             return new DownloadSnapshot(info, phase, value, file, error,
                     installerError, dialogVisible, initialInstallerHandoffEligible,
-                    initialInstallerHandoffAttempted);
+                    initialInstallerHandoffAttempted, failure);
         }
 
         DownloadSnapshot withPhase(DownloadPhase value, String message, boolean failedInstaller) {
             return new DownloadSnapshot(info, value, progress, file, message,
                     failedInstaller, dialogVisible, initialInstallerHandoffEligible,
-                    initialInstallerHandoffAttempted);
+                    initialInstallerHandoffAttempted, null);
+        }
+
+        DownloadSnapshot withFailure(AppUpdateManager.Failure value) {
+            return new DownloadSnapshot(info, phase, progress, file, error,
+                    installerError, dialogVisible, initialInstallerHandoffEligible,
+                    initialInstallerHandoffAttempted, value);
         }
 
         DownloadSnapshot withDialogVisible(boolean value) {
             return new DownloadSnapshot(info, phase, progress, file, error,
                     installerError, value, value && initialInstallerHandoffEligible,
-                    initialInstallerHandoffAttempted);
+                    initialInstallerHandoffAttempted, failure);
         }
 
         DownloadSnapshot withInitialInstallerHandoff(boolean eligible, boolean attempted) {
             return new DownloadSnapshot(info, phase, progress, file, error,
-                    installerError, dialogVisible, eligible, attempted);
+                    installerError, dialogVisible, eligible, attempted, failure);
         }
     }
 
@@ -324,10 +335,9 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
             synchronized (downloadLock) {
                 if (downloadOperation != null
                         && downloadOperation.info.resultId.equals(current.info.resultId)) {
-                    downloadOperation = downloadOperation.withPhase(
-                            DownloadPhase.READY,
-                            error.getMessage() == null ? error.getClass().getSimpleName()
-                                    : error.getMessage(), true);
+                    downloadOperation = downloadOperation.withPhase(DownloadPhase.READY,
+                            CellularRecovery.diagnosticDetail(error, "operation=update_install"),
+                            true).withFailure(AppUpdateManager.failureOf(error));
                     current = downloadOperation;
                 }
             }
@@ -436,11 +446,12 @@ public final class UpdateHintRuntime implements Application.ActivityLifecycleCal
             downloadOperation = error == null
                     ? new DownloadSnapshot(downloadOperation.info, DownloadPhase.READY,
                             100, file, null, false, downloadOperation.dialogVisible,
-                            downloadOperation.dialogVisible, false)
+                            downloadOperation.dialogVisible, false, null)
                     : new DownloadSnapshot(downloadOperation.info, DownloadPhase.FAILED,
                             downloadOperation.progress, null,
-                            error.getMessage() == null ? error.getClass().getSimpleName()
-                                    : error.getMessage(), false, downloadOperation.dialogVisible);
+                            CellularRecovery.diagnosticDetail(error, "operation=update_download"),
+                            false, downloadOperation.dialogVisible)
+                            .withFailure(AppUpdateManager.failureOf(error));
             current = downloadOperation;
         }
         attempt.setOnCancelListener(null);

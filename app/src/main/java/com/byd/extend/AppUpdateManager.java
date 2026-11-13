@@ -24,15 +24,16 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 
 final class AppUpdateManager {
@@ -488,6 +489,33 @@ final class AppUpdateManager {
         for (File file : files) file.delete();
     }
 
+    /** User-facing category of an update failure; the raw cause is logged separately. */
+    enum Failure { SIGNER_UNAVAILABLE, SIGNER_MISMATCH, OTHER }
+
+    static final class SignerException extends SecurityException {
+        final Failure failure;
+
+        SignerException(Failure failure, String message) {
+            super(message);
+            this.failure = failure;
+        }
+    }
+
+    static Failure failureOf(Throwable error) {
+        return error instanceof SignerException ? ((SignerException) error).failure : Failure.OTHER;
+    }
+
+    /**
+     * Android 9-10 getPackageArchiveInfo() collects certificates only for GET_SIGNATURES;
+     * GET_SIGNING_CERTIFICATES alone leaves signingInfo null for an archive.
+     */
+    @SuppressWarnings("deprecation")
+    static int archiveSignatureFlags(int sdk) {
+        return sdk >= Build.VERSION_CODES.P
+                ? PackageManager.GET_SIGNING_CERTIFICATES | PackageManager.GET_SIGNATURES
+                : PackageManager.GET_SIGNATURES;
+    }
+
     @SuppressWarnings("deprecation")
     private static void validateDownloadedApk(Context context, File file) throws Exception {
         if (!file.isFile()) throw new IOException("Downloaded APK is missing");
@@ -495,7 +523,8 @@ final class AppUpdateManager {
         int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
                 ? PackageManager.GET_SIGNING_CERTIFICATES
                 : PackageManager.GET_SIGNATURES;
-        PackageInfo archive = packageManager.getPackageArchiveInfo(file.getAbsolutePath(), flags);
+        PackageInfo archive = packageManager.getPackageArchiveInfo(
+                file.getAbsolutePath(), archiveSignatureFlags(Build.VERSION.SDK_INT));
         if (archive == null) throw new IOException("Downloaded file is not an APK");
         if (!context.getPackageName().equals(archive.packageName)) {
             throw new SecurityException("Downloaded APK package mismatch: " + archive.packageName);
@@ -508,13 +537,21 @@ final class AppUpdateManager {
         PackageInfo installed = packageManager.getPackageInfo(context.getPackageName(), flags);
         Set<String> archiveSigners = signerSet(archive);
         Set<String> installedSigners = signerSet(installed);
-        if (archiveSigners.isEmpty() || !archiveSigners.equals(installedSigners)) {
-            throw new SecurityException("Downloaded APK signing certificate mismatch");
+        if (archiveSigners.isEmpty()) {
+            throw new SignerException(Failure.SIGNER_UNAVAILABLE,
+                    "Downloaded APK signer unavailable: sdk=" + Build.VERSION.SDK_INT
+                            + ", archive signers=0, installed=" + installedSigners);
+        }
+        if (!archiveSigners.equals(installedSigners)) {
+            throw new SignerException(Failure.SIGNER_MISMATCH,
+                    "Downloaded APK signing certificate mismatch: archive=" + archiveSigners
+                            + " installed=" + installedSigners);
         }
     }
 
+    /** SHA-256 of each signer certificate: compared for equality and readable in logs. */
     @SuppressWarnings("deprecation")
-    private static Set<String> signerSet(PackageInfo info) {
+    private static Set<String> signerSet(PackageInfo info) throws NoSuchAlgorithmException {
         Signature[] signatures;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             signatures = info.signingInfo == null
@@ -522,9 +559,12 @@ final class AppUpdateManager {
         } else {
             signatures = info.signatures == null ? new Signature[0] : info.signatures;
         }
-        Set<String> result = new HashSet<>();
+        Set<String> result = new TreeSet<>();
         for (Signature signature : signatures) {
-            result.add(Arrays.toString(signature.toByteArray()));
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(signature.toByteArray());
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte value : digest) hex.append(String.format(Locale.ROOT, "%02x", value));
+            result.add(hex.toString());
         }
         return result;
     }
