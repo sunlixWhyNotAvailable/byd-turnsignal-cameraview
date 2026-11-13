@@ -77,6 +77,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     private volatile long discoveryGeneration;
     private AdbAuthorizationSession.RecoveryOperation operation;
     private volatile AdbRecoverySnapshot.Stage lastPrerequisite;
+    private volatile long registrationCycle = -1L;
     private String lastWifiDiagnostic = "";
     private final Runnable authorizationListener = () -> {
         if (closed) return;
@@ -204,7 +205,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             applyDisabled();
             return;
         }
-        if (deferForPrerequisite()) return;
+        if (deferForPrerequisite(false)) return;
         OemAdbRecovery.Attempt pending = oemAttempt;
         if (pending != null && pending.waiting()) {
             oemRetryRequested.set(false);
@@ -245,7 +246,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
 
         logWifiState("recovery_check");
         AdbRecoveryPolicy.Proof proof = freshClassicProof();
-        if (deferForPrerequisite()) return;
+        if (deferForPrerequisite(false)) return;
         boolean preserveReady = wasReady;
         if (proof != AdbRecoveryPolicy.Proof.AVAILABLE && preserveReady) {
             beginFailedRevalidation(reason, proof);
@@ -253,6 +254,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         }
         if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
             waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
+            requestFirstRegistration();
             return;
         }
         if (proof == AdbRecoveryPolicy.Proof.FAILED) {
@@ -294,20 +296,21 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
                 if (oemAttempt != attempt) return;
                 oemAttempt = null;
             }
-            if (deferForPrerequisite()) return;
+            if (deferForPrerequisite(false)) return;
             try (AdbAuthorizationSession.RecoveryOperation admitted = LocalAdbClient.AUTHORIZATION.beginRecovery()) {
                 if (admitted == null) return;
                 operation = admitted;
                 boolean wasReady = coordinator.snapshot().authenticated5555();
                 AdbRecoveryPolicy.Proof proof = completed && !late
-                        ? proveAfterUsbEnableTransition() : freshClassicProof();
-                if (proof == null || deferForPrerequisite()) return;
+                        ? proveAfterUsbEnableTransition(false) : freshClassicProof();
+                if (proof == null || deferForPrerequisite(false)) return;
                 if (proof == AdbRecoveryPolicy.Proof.AVAILABLE) {
                     finishClassicRecovery(wasReady, reason);
                 } else {
                     if (wasReady) beginFailedRevalidation(reason, proof);
                     if (proof == AdbRecoveryPolicy.Proof.AUTHORIZATION_REQUIRED) {
                         waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION);
+                        requestFirstRegistration();
                     } else if (proof == AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE) {
                         continueLegacyRecovery(late ? Reason.RECONFIGURE : reason);
                     } else blocked("classic_proof_after_oem_failed");
@@ -324,7 +327,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
             return;
         }
         if (adbEnabled.transitionedTo(1)) {
-            AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition();
+            AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition(true);
             if (proof == null || deferForPrerequisite()) return;
             if (proof == AdbRecoveryPolicy.Proof.AVAILABLE) {
                 finishClassicRecovery(false, reason);
@@ -387,7 +390,7 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
                     coordinator.stage(AdbRecoverySnapshot.Stage.PREPARING);
                     publish();
                 }
-                AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition();
+                AdbRecoveryPolicy.Proof proof = proveAfterUsbEnableTransition(true);
                 if (proof == null || deferForPrerequisite()) return;
                 if (proof != AdbRecoveryPolicy.Proof.AVAILABLE) {
                     if (preserveReady) beginFailedRevalidation(revalidationReason, proof);
@@ -440,13 +443,13 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         logWifiState("ready");
     }
 
-    private AdbRecoveryPolicy.Proof proveAfterUsbEnableTransition() {
+    private AdbRecoveryPolicy.Proof proveAfterUsbEnableTransition(boolean requireAuthorizedIdentity) {
         AdbRecoveryPolicy.Proof proof = AdbRecoveryPolicy.Proof.TRANSPORT_UNAVAILABLE;
         for (int attempt = 1; attempt <= AdbRecoveryPolicy.USB_ENABLE_PROOF_ATTEMPTS; attempt++) {
             if (closed || !settings.getBoolean(RECOVERY_ENABLED, false)
-                    || deferForPrerequisite()) return null;
+                    || deferForPrerequisite(requireAuthorizedIdentity)) return null;
             proof = freshClassicProof();
-            if (deferForPrerequisite()) return null;
+            if (deferForPrerequisite(requireAuthorizedIdentity)) return null;
             if (!AdbRecoveryPolicy.shouldRetryUsbEnableProof(proof, attempt)) return proof;
             SystemClock.sleep(AdbRecoveryPolicy.USB_ENABLE_PROOF_INTERVAL_MS);
         }
@@ -824,6 +827,11 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
     }
 
     private boolean deferForPrerequisite() {
+        return deferForPrerequisite(true);
+    }
+
+    /** Only the proof/OEM first-opening path passes false; every other write still needs a key. */
+    private boolean deferForPrerequisite(boolean requireAuthorizedIdentity) {
         if (closed) return true;
         if (!settings.getBoolean(RECOVERY_ENABLED, false)) {
             applyDisabled();
@@ -831,7 +839,8 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         }
         boolean pending = LocalAdbClient.AUTHORIZATION.pending();
         AdbRecoverySnapshot.Stage prerequisite = AdbRecoveryPolicy.prerequisite(pending,
-                !pending && LocalAdbClient.hasAuthorizedIdentity(context, log::log));
+                !pending && LocalAdbClient.hasAuthorizedIdentity(context, log::log),
+                requireAuthorizedIdentity);
         if (prerequisite != null) {
             waitForPrerequisite(prerequisite);
             return true;
@@ -849,6 +858,34 @@ public final class AdbRecoveryRuntime implements AutoCloseable {
         if (AppPermissionProvisioner.hasWriteSecureSettings(context)) return false;
         waitForPrerequisite(AdbRecoverySnapshot.Stage.WAITING_FOR_PERMISSIONS);
         return true;
+    }
+
+    /**
+     * ADB answered but this key is not registered: start the standard RSA registration so the
+     * user can approve it. The in-memory cycle guard only stops a request loop inside this process;
+     * a restarted process may prompt once again until the key is approved (owner decision).
+     */
+    private void requestFirstRegistration() {
+        if (LocalAdbClient.hasAuthorizedIdentity(context)) return;
+        long cycle = coordinator.snapshot().cycleId();
+        if (cycle == registrationCycle) return;
+        AdbAuthorizationSession.RequestSnapshot current = LocalAdbClient.AUTHORIZATION.foregroundSnapshot();
+        if (current != null && current.isActive()) return;
+        registrationCycle = cycle;
+        // Leave the held recovery admission first; the registration itself preempts background ADB.
+        mainHandler.post(() -> {
+            if (closed || !settings.getBoolean(RECOVERY_ENABLED, false)) return;
+            try {
+                AdbAuthorizationSession.Submission submission = ForegroundAdbAuthorization.request(
+                        context, LocalAdbClient.PromptMode.AUTO_ONCE, "adb_recovery_first_open");
+                log.log("adb_recovery_registration_requested", "cycle", cycle,
+                        "request_id", submission.snapshot.requestId,
+                        "disposition", submission.disposition.name());
+            } catch (RuntimeException error) {
+                failure("adb_recovery_registration_failed", "foreground_rsa_request", error,
+                        "cycle", cycle);
+            }
+        });
     }
 
     private void waitForPrerequisite(AdbRecoverySnapshot.Stage stage) {

@@ -46,9 +46,10 @@ final class AdbRecoveryPolicy {
                 && completedAttempts < USB_ENABLE_PROOF_ATTEMPTS;
     }
 
+    /** OEM first opening may run without a registered key; the user approves the key afterwards. */
     static AdbRecoverySnapshot.Stage prerequisite(boolean authorizationPending,
-            boolean authorizedIdentity) {
-        if (authorizationPending || !authorizedIdentity) {
+            boolean authorizedIdentity, boolean requireAuthorizedIdentity) {
+        if (authorizationPending || requireAuthorizedIdentity && !authorizedIdentity) {
             return AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION;
         }
         return null;

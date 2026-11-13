@@ -2,9 +2,9 @@
 <resources>
     <!-- UiStrings matches these values by the exact default-English and Ukrainian pair. -->
     <string name="ui_gap_001">"Відновлення ADB"</string>
-    <string name="ui_gap_002">"Відновлення працює лише для ADB, який уже було відкрито й авторизовано. Воно не може виконати перше відкриття або першу авторизацію ADB."</string>
+    <string name="ui_gap_002">"Відновлює доступ до ADB, якщо його втрачено.\nПробує відкрити ADB уперше, але не замінює початкову авторизацію (у разі відмови - ADB не закривається)."</string>
     <string name="ui_gap_003">"Автоматичне відновлення"</string>
-    <string name="ui_gap_004">"Відновлювати локальне підключення ADB на порту 5555"</string>
+    <string name="ui_gap_004">"Спершу через системний сервіс авто без Wi-Fi, за потреби — через бездротове налагодження."</string>
     <string name="ui_gap_005">"Стан"</string>
     <string name="ui_gap_006">"Повторити запит Wi-Fi"</string>
     <string name="ui_gap_007">"Нагадування про Wi-Fi"</string>

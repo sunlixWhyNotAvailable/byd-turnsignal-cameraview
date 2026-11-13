@@ -2,9 +2,9 @@
 <resources>
     <!-- UiStrings matches these values by the exact default-English and Ukrainian pair. -->
     <string name="ui_gap_001">"ADB recovery"</string>
-    <string name="ui_gap_002">"Recovery works only for ADB that was already opened and authorized. It cannot perform the first ADB opening or authorization."</string>
+    <string name="ui_gap_002">"Restores ADB access if it is lost.\nTries to open ADB for the first time, but does not replace initial authorization (if declined, ADB is not closed)."</string>
     <string name="ui_gap_003">"Automatic recovery"</string>
-    <string name="ui_gap_004">"Restore the local ADB connection on port 5555"</string>
+    <string name="ui_gap_004">"First through the vehicle system service without Wi-Fi, then through wireless debugging if needed."</string>
     <string name="ui_gap_005">"Status"</string>
     <string name="ui_gap_006">"Retry Wi-Fi request"</string>
     <string name="ui_gap_007">"Wi-Fi reminder"</string>

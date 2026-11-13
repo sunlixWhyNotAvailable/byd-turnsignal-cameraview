@@ -4,9 +4,21 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class AdbRecoveryPolicyTest {
+    @Test public void firstOpeningMayProceedWithoutRegisteredKeyButNeverDuringRsa() {
+        AdbRecoverySnapshot.Stage waiting = AdbRecoverySnapshot.Stage.WAITING_FOR_AUTHORIZATION;
+        // OEM/proof path: an unregistered key does not block, an active RSA request does.
+        assertNull(AdbRecoveryPolicy.prerequisite(false, false, false));
+        assertEquals(waiting, AdbRecoveryPolicy.prerequisite(true, false, false));
+        // Every other path still requires the registered key.
+        assertEquals(waiting, AdbRecoveryPolicy.prerequisite(false, false, true));
+        assertEquals(waiting, AdbRecoveryPolicy.prerequisite(true, true, true));
+        assertNull(AdbRecoveryPolicy.prerequisite(false, true, true));
+    }
+
     @Test public void explicitAndTransportWakeReasonsRevalidateReady() {
         assertTrue(AdbRecoveryPolicy.shouldRevalidateReady(AdbRecoveryRuntime.Reason.MANUAL));
         assertTrue(AdbRecoveryPolicy.shouldRevalidateReady(AdbRecoveryRuntime.Reason.BOOT));

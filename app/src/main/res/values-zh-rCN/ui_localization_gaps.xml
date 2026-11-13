@@ -2,9 +2,9 @@
 <resources>
     <!-- UiStrings matches these values by the exact default-English and Ukrainian pair. -->
     <string name="ui_gap_001">"ADB 恢复"</string>
-    <string name="ui_gap_002">"恢复仅适用于先前已开启并授权的 ADB，无法完成首次开启或首次授权。"</string>
+    <string name="ui_gap_002">"在 ADB 访问丢失时恢复访问。\n尝试首次开启 ADB，但不能替代首次授权（若拒绝授权，ADB 不会关闭）。"</string>
     <string name="ui_gap_003">"自动恢复"</string>
-    <string name="ui_gap_004">"恢复端口 5555 上的本地 ADB 连接"</string>
+    <string name="ui_gap_004">"首先通过车辆系统服务（无需 Wi-Fi），必要时再通过无线调试。"</string>
     <string name="ui_gap_005">"状态"</string>
     <string name="ui_gap_006">"重试 Wi-Fi 请求"</string>
     <string name="ui_gap_007">"Wi-Fi 提醒"</string>

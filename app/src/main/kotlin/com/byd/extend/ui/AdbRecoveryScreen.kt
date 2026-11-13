@@ -85,16 +85,17 @@ internal fun FormScope.AdbRecoveryScreen(
             .border(1.dp, colors.yellow.copy(alpha = .55f), RoundedCornerShape(8.dp))
             .padding(14.dp)) {
             Text(strings.text(
-                "Відновлення працює лише для ADB, який уже було відкрито й авторизовано. Воно не може виконати перше відкриття або першу авторизацію ADB.",
-                "Recovery works only for ADB that was already opened and authorized. It cannot perform the first ADB opening or authorization.",
-                "恢复仅适用于先前已开启并授权的 ADB，无法完成首次开启或首次授权。",
+                "Відновлює доступ до ADB, якщо його втрачено.\nПробує відкрити ADB уперше, але не замінює початкову авторизацію (у разі відмови - ADB не закривається).",
+                "Restores ADB access if it is lost.\nTries to open ADB for the first time, but does not replace initial authorization (if declined, ADB is not closed).",
+                "在 ADB 访问丢失时恢复访问。\n尝试首次开启 ADB，但不能替代首次授权（若拒绝授权，ADB 不会关闭）。",
             ), color = if (colors.dark) colors.yellow else colors.text, fontSize = 16.sp,
                 lineHeight = 22.sp)
         } }
         row("enabled") { SwitchLine(
             strings.text("Автоматичне відновлення", "Automatic recovery", "自动恢复"),
-            strings.text("Відновлювати локальне підключення ADB на порту 5555",
-                "Restore the local ADB connection on port 5555", "恢复端口 5555 上的本地 ADB 连接"),
+            strings.text("Спершу через системний сервіс авто без Wi-Fi, за потреби — через бездротове налагодження.",
+                "First through the vehicle system service without Wi-Fi, then through wireless debugging if needed.",
+                "首先通过车辆系统服务（无需 Wi-Fi），必要时再通过无线调试。"),
             state.enabled,
             { onAction(AdbRecoveryUiAction.SetRecoveryEnabled(it)) },
             colors,
