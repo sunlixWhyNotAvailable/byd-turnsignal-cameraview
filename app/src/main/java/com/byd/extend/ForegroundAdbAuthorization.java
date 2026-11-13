@@ -59,8 +59,8 @@ final class ForegroundAdbAuthorization {
         if (base == null) base = app.getFilesDir();
         File captures = new File(base, "captures");
         if (!captures.isDirectory() && !captures.mkdirs()) captures = app.getFilesDir();
-        return new File(captures, "helper-service-adb-authorization-" + System.currentTimeMillis()
-                + "-" + requestId + ".jsonl");
+        return new File(captures, "helper-service-adb-authorization-"
+                + LogTime.fileStamp(System.currentTimeMillis()) + "-" + requestId + ".jsonl");
     }
 
     private static void record(AsyncServiceLog log, long requestId, String kind, Object[] fields) {

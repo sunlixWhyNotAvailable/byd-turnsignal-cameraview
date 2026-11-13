@@ -35,8 +35,9 @@ final class CellularRecoveryDiagnostics {
     }
 
     static void write(File directory, JSONObject snapshot) throws Exception {
+        long wallMs = System.currentTimeMillis();
         JSONObject record = new JSONObject().put("kind", "cellular_diagnostics")
-                .put("wall_ms", System.currentTimeMillis()).put("snapshot", snapshot);
+                .put("wall_time", LogTime.iso(wallMs)).put("wall_ms", wallMs).put("snapshot", snapshot);
         byte[] bytes = (record + "\n").getBytes(StandardCharsets.UTF_8);
         if (bytes.length > 262_144) throw new java.io.IOException("Cellular diagnostic snapshot exceeds budget");
         File target = new File(directory, FILE_NAME), temp = new File(directory, FILE_NAME + ".tmp");

@@ -72,8 +72,10 @@ public final class StockAvmShellMain {
                 "usage: StockAvmShellMain <appUid> <versionCode>");
         int appUid = Integer.parseInt(args[0]);
         int versionCode = Integer.parseInt(args[1]);
+        long startedWallMs = System.currentTimeMillis();
         System.out.println(new JSONObject().put("kind", "stock_avm_process_start")
-                .put("pid", Process.myPid()).put("wall_ms", System.currentTimeMillis())
+                .put("wall_time", LogTime.iso(startedWallMs))
+                .put("pid", Process.myPid()).put("wall_ms", startedWallMs)
                 .put("build", versionCode).put("protocol", StockAvmShellProtocol.VERSION));
         OwnerLock owner = OwnerLock.acquire();
         if (owner == null) return;

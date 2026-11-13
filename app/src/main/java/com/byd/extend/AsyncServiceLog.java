@@ -94,8 +94,13 @@ final class AsyncServiceLog {
     synchronized void appendEvent(DiagnosticEvent event) {
         if (accepting && DiagnosticLogPolicy.shouldPersist(event.kind)) enqueue(new Entry(event));
     }
-    synchronized void appendRaw(String line) {
-        if (!accepting || line == null) return;
+    void appendRaw(String line) {
+        if (line == null) return;
+        // Stamp at submission (outside the lock), not at the later drain, so queue delay does not shift the time.
+        appendStamped(LogTime.withWallTime(line, System.currentTimeMillis()));
+    }
+    private synchronized void appendStamped(String line) {
+        if (!accepting) return;
         String kind = DiagnosticLogPolicy.kind(line);
         if (!DiagnosticLogPolicy.shouldPersist(kind)) return;
         enqueue(new Entry(line, DiagnosticLogPolicy.isDetail(kind), null));
@@ -237,6 +242,8 @@ final class AsyncServiceLog {
         }
     }
     private boolean write(String line) {
+        // Writer-generated summaries and loss reports have no submission time of their own.
+        line = LogTime.withWallTime(line, System.currentTimeMillis());
         try {
             if (sink != null) {
                 if (pendingIoFailure != null) { sink.accept(pendingIoFailure); pendingIoFailure = null; }
@@ -303,6 +310,7 @@ final class AsyncServiceLog {
     private void reportIoFailure(String operation, Throwable failure) {
         try {
             String line = new JSONObject().put("kind", "log_writer_failed")
+                    .put("wall_time", LogTime.iso(System.currentTimeMillis()))
                     .put("operation", operation).put("file", file == null ? "unresolved" : file.getName())
                     .put("error", AdbRecoveryDiagnostics.safeText(
                             com.byd.extend.remote.CameraViewingDiagnostics.describe(failure))).toString();
