@@ -3,10 +3,15 @@ param(
     [string]$AndroidNdk,
     [string]$BuildRoot,
     [string]$OutputRoot,
+    [string]$AbiList,
     [string[]]$Abis = @("arm64-v8a")
 )
 
 $ErrorActionPreference = "Stop"
+$windowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+if (-not [string]::IsNullOrWhiteSpace($AbiList)) {
+    $Abis = @($AbiList.Split(',') | ForEach-Object { $_.Trim() })
+}
 # Gradle can inherit PowerShell 7 module paths while launching Windows PowerShell 5.
 Import-Module (Join-Path $PSHOME "Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1") -Force
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..\..")).Path
@@ -17,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $repoRoot "app\build\generated\tunnelJniLibs"
 }
 if ([string]::IsNullOrWhiteSpace($GoExecutable)) {
-    $goCommand = Get-Command go.exe -ErrorAction SilentlyContinue
+    $goCommand = Get-Command $(if ($windowsHost) { "go.exe" } else { "go" }) -ErrorAction SilentlyContinue
     if ($null -ne $goCommand) { $GoExecutable = $goCommand.Source }
     else { $GoExecutable = Join-Path $BuildRoot "go\bin\go.exe" }
 }
@@ -176,7 +181,8 @@ try {
     & $goPath mod edit "-modfile=$buildModFile" "-replace=tailscale.com=$replacementPath"
     if ($LASTEXITCODE -ne 0) { throw "Could not create the pinned Tailscale source patch modfile." }
 
-    $toolchainBin = Join-Path $ndkPath "toolchains\llvm\prebuilt\windows-x86_64\bin"
+    $ndkHost = if ($windowsHost) { "windows-x86_64" } else { "linux-x86_64" }
+    $toolchainBin = Join-Path $ndkPath "toolchains/llvm/prebuilt/$ndkHost/bin"
     $abiTargets = @{
         "arm64-v8a"     = @{ Arch = "arm64"; Compiler = "aarch64-linux-android26-clang.cmd"; GoArm = "" }
         "armeabi-v7a"   = @{ Arch = "arm"; Compiler = "armv7a-linux-androideabi26-clang.cmd"; GoArm = "7" }
@@ -187,7 +193,8 @@ try {
     foreach ($abi in $Abis) {
         if (-not $abiTargets.ContainsKey($abi)) { throw "Unsupported Android ABI '$abi'." }
         $target = $abiTargets[$abi]
-        $clang = Join-Path $toolchainBin $target.Compiler
+        $compiler = if ($windowsHost) { $target.Compiler } else { $target.Compiler.Replace(".cmd", "") }
+        $clang = Join-Path $toolchainBin $compiler
         if (-not (Test-Path $clang)) { throw "NDK compiler wrapper '$($target.Compiler)' was not found." }
         $env:GOOS = "android"
         $env:GOARCH = $target.Arch

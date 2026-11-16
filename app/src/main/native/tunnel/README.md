@@ -24,3 +24,14 @@ the license and notice files for the native runtime's Android dependency
 closure. Source, pinned module versions/checksums, and the reproducible build
 scripts remain in this repository; the packaged license inventory is at
 `app/src/main/assets/third-party/tunnel/LICENSES.txt`.
+
+The Gradle task supports Windows and Linux hosts. Windows uses `powershell.exe`;
+Linux requires PowerShell 7 (`pwsh`) and Go 1.26.10 on `PATH`, plus the Linux NDK
+r30 beta2 toolchain. Gradle keeps the native build cache under
+`app/build/tunnel-native` on both hosts. On Linux, build the distribution APK with
+`sh ./gradlew :app:assemblePerformance` using JDK 17 and the configured Android SDK.
+
+For an arm64-only APK, append `-PtargetAbis=arm64-v8a`. This selects the ABI for
+both native builds and APK packaging; the result is copied to
+`build_output/byd-extend-v<version>-arm64-v8a.apk`. Without this property, the
+build uses the upstream arm64-only default and APK filename.

@@ -6,6 +6,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val supportedNativeAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+val nativeAbis = providers.gradleProperty("targetAbis")
+    .map { value -> value.split(',').map { it.trim() }.distinct() }
+    .getOrElse(listOf("arm64-v8a"))
+require(nativeAbis.isNotEmpty() && nativeAbis.all { it in supportedNativeAbis }) {
+    "targetAbis must be a comma-separated list of supported Android ABIs"
+}
+
 android {
     namespace = "com.byd.extend"
     compileSdk = 35
@@ -39,7 +47,7 @@ android {
         targetSdk = 29
         versionCode = 135
         versionName = "1.11.2"
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += nativeAbis }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
         buildConfigField(
             "String",
@@ -126,10 +134,13 @@ val dexArtworkWorker by tasks.registering(Exec::class) {
     doFirst {
         val output = artworkAssets.get().dir("music-artwork").asFile
         output.mkdirs()
-        val d8 = android.sdkDirectory.resolve("build-tools/${android.buildToolsVersion}/d8.bat")
-        commandLine("cmd", "/c", d8.absolutePath, "--release", "--min-api", "31",
+        val windowsHost = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+        val d8 = android.sdkDirectory.resolve(
+            "build-tools/${android.buildToolsVersion}/${if (windowsHost) "d8.bat" else "d8"}")
+        val launcher = if (windowsHost) listOf("cmd", "/c", d8.absolutePath) else listOf(d8.absolutePath)
+        commandLine(launcher + listOf("--release", "--min-api", "31",
             "--lib", android.bootClasspath.first().absolutePath, "--output",
-            output.resolve("worker.jar").absolutePath, artworkWorkerClasses.get().archiveFile.get().asFile.absolutePath)
+            output.resolve("worker.jar").absolutePath, artworkWorkerClasses.get().archiveFile.get().asFile.absolutePath))
     }
 }
 android.sourceSets.getByName("main").assets.srcDir(artworkAssets)
@@ -142,10 +153,15 @@ tasks.matching {
 android.sourceSets.getByName("main").jniLibs.srcDir(tunnelJniOutput)
 val buildCameraTunnels by tasks.registering(Exec::class) {
     inputs.dir("src/main/native/tunnel")
+    inputs.property("abis", nativeAbis)
     outputs.dir(tunnelJniOutput)
-    commandLine("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    val windowsHost = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+    commandLine(if (windowsHost) "powershell.exe" else "pwsh",
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
         file("src/main/native/tunnel/build.ps1").absolutePath,
         "-AndroidNdk", android.sdkDirectory.resolve("ndk/${android.ndkVersion}").absolutePath,
+        "-BuildRoot", layout.buildDirectory.dir("tunnel-native").get().asFile.absolutePath,
+        "-AbiList", nativeAbis.joinToString(","),
         "-OutputRoot", tunnelJniOutput.get().asFile.absolutePath)
 }
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
@@ -156,7 +172,8 @@ val copyPerformanceApkToBuildOutput by tasks.registering(Copy::class) {
     dependsOn("packagePerformance")
     from(layout.buildDirectory.file("outputs/apk/performance/app-performance.apk"))
     into(rootProject.layout.projectDirectory.dir("build_output"))
-    rename { "byd-extend-v${android.defaultConfig.versionName}.apk" }
+    val abiSuffix = if (nativeAbis == listOf("arm64-v8a")) "" else "-${nativeAbis.joinToString("-")}"
+    rename { "byd-extend-v${android.defaultConfig.versionName}$abiSuffix.apk" }
 }
 
 androidComponents.onVariants(androidComponents.selector().withBuildType("performance")) { variant ->
