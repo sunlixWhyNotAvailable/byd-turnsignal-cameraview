@@ -8,6 +8,15 @@ import static org.junit.Assert.*;
 /** Exercises actual persistence decisions; no Android/OEM outcome is substituted. */
 public class DiagnosticLogPolicyTest {
     private final boolean previous = DiagnosticLogPolicy.extended();
+    @Test public void RadarRetryDetailIsExtendedButFailuresAndRecoveryAreOrdinary() {
+        DiagnosticLogPolicy.configure(false);
+        assertFalse(DiagnosticLogPolicy.shouldPersist("parking_radar_recovery"));
+        for (String kind : new String[]{"distance_radar_recovery", "distance_radar_error",
+                "motion_host_cleanup_failed", "music_foreground_failed"})
+            assertTrue(kind, DiagnosticLogPolicy.shouldPersist(kind));
+        DiagnosticLogPolicy.configure(true);
+        assertTrue(DiagnosticLogPolicy.shouldPersist("parking_radar_recovery"));
+    }
     @After public void restore() { DiagnosticLogPolicy.configure(previous); }
 
     @Test public void ordinaryModeKeepsFunctionalDeliveryAndUnknownEventsWithoutFps() {

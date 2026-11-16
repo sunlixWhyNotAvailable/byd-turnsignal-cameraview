@@ -122,6 +122,7 @@ final class FixedBydTelemetryManager {
         return ((byte[]) value).clone();
     }
 
+    @android.annotation.SuppressLint("WrongConstant") // OEM registers the "auto" service outside AOSP's constant list.
     private static Object resolveManager(Context context) {
         Context application = context.getApplicationContext();
         return (application == null ? context : application).getSystemService("auto");

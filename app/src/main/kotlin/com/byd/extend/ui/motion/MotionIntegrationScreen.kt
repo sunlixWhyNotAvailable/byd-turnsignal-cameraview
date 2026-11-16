@@ -435,6 +435,7 @@ private fun MotionLibraryDialog(base: Boolean, library: MotionTemplates, store: 
 }
 
 @Composable
+@android.annotation.SuppressLint("ProduceStateDoesNotAssignValue") // value receives the IO result inside the producer.
 private fun MotionEditor(template: MotionTemplate, store: MotionTemplateStore, palette: UiPalette,
     strings: UiStrings, onChange: (MotionTemplate) -> Unit, onClose: () -> Unit, onSave: (MotionTemplate) -> Unit) {
     var selectedId by rememberSaveable { mutableStateOf(template.texts.firstOrNull()?.id) }
@@ -562,6 +563,7 @@ private fun MotionSlider(label: String, value: Int, range: IntRange, palette: Ui
 private data class MotionLayout(val block: MotionText, val layout: StaticLayout, val rect: Rect)
 private val MotionDesignSize = IntSize(1920, 1080)
 
+@android.annotation.SuppressLint("WrongConstant") // Layout's API26 constants equal LineBreaker's API29 constants without adding an API29 dependency.
 private fun textLayout(block: MotionText, strings: UiStrings, size: IntSize, font: Typeface): MotionLayout {
     val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = block.color
@@ -589,6 +591,7 @@ private fun textLayout(block: MotionText, strings: UiStrings, size: IntSize, fon
 }
 
 @Composable
+@android.annotation.SuppressLint("ProduceStateDoesNotAssignValue") // value receives the IO result inside the producer.
 internal fun MotionTemplateCanvas(template: MotionTemplate, store: MotionTemplateStore, strings: UiStrings,
     modifier: Modifier, selectedId: String? = null, onSelect: ((String?) -> Unit)? = null,
     onMove: ((MotionText) -> Unit)? = null, onAdd: ((Offset) -> Unit)? = null,

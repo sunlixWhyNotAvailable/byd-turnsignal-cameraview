@@ -45,7 +45,7 @@ BYD Extend adds configurable camera views, a rearview-mirror widget, turn-signal
 
 ## Installation and first start
 
-You need Android 8.0 or newer, a compatible DiLink system, and permission to install APK files. Local ADB is required for the functions listed below, not for every screen or feature. It lets the app start privileged helper processes and perform system operations.
+The current APK requires ARM64 and Android 8.0 or newer for installation. Individual features also require the corresponding DiLink/OEM APIs; installation alone does not confirm every feature on a model or firmware. You need permission to install APK files. Local ADB is required for the functions listed below, not for every screen or feature. It lets the app start privileged helper processes and perform system operations.
 
 1. Download the **BYD Extend** APK from the release page. If several apps are attached, choose `byd-extend-v<version>.apk`. Compare its SHA-256 checksum with the published value when available.
 2. Install and open the app while parked.
@@ -491,7 +491,7 @@ In `Settings -> Logs`:
 - **Export/load camera presets:** save or load a JSON file containing camera visual settings, including placement, calibration, display selection, and borders. A camera preset is not a full backup: it excludes steering/speed/distance rules, learned buttons, and audio files.
 - **Import settings:** migrate from the older BYD Turn Signal app; this is separate from loading a camera preset.
 - **Share / Save as:** prepare a diagnostic ZIP and share it or choose a destination. Progress shows the current stage and, when known, processed/remaining volume and percentage. Cancel leaves source logs intact.
-- **Compatibility package:** collect system details for investigating model or firmware compatibility.
+- **Compatibility package:** collect system details and available OEM Sentry APKs/libraries for investigating model or firmware compatibility. Send the complete package privately; use a description and reviewed, redacted diagnostics in public issues.
 - **Record logcat:** continuously record system logs. This is **off by default**; turn it on before reproducing an intermittent issue and off afterward.
 
 Continuous logcat can grow very large and is not automatically rotated away. Turning recording off retains history. Clear logs after sending the required evidence, and keep enough free storage for both source files and the ZIP. Without continuous recording, export still captures the system-log buffer available at that moment; it cannot recover overwritten history from before a reboot.
@@ -624,7 +624,7 @@ Choose a camera-border colour visually or enter its hexadecimal value. One examp
 ### Report a problem
 
 1. If possible, enable `Settings -> Logs -> Record logcat` **before** reproducing the problem, then stop recording afterward.
-2. Use `Share` or `Save as` for diagnostic logs. Include a compatibility package when the issue concerns a new vehicle or firmware.
+2. Use `Share` or `Save as` for diagnostic logs. For a new vehicle or firmware, prepare a compatibility package and arrange private transfer of the full package; it can contain OEM APKs/libraries and personal data.
 3. Open a [GitHub issue](https://github.com/sunlixWhyNotAvailable/byd-turnsignal-cameraview/issues). Include the app version, vehicle/model year, firmware version, approximate local time, reproduction steps, and expected versus actual behaviour.
 
 For camera issues, include the output display and relevant preset/settings. For audio issues, state whether the route was interior or exterior and whether it was the first playback after vehicle sleep. Avoid clearing logs before collecting the evidence.
@@ -643,7 +643,7 @@ On Windows, use `.\gradlew.bat :app:assemblePerformance`. The APK is copied to `
 
 The embedded camera tunnels also require Windows PowerShell, Go **1.26.10** on `PATH`,
 and Android NDK **30.0.15729638-beta2** (SDK directory `ndk/30.0.15729638`). Gradle
-builds all four native ABIs from pinned sources into `app/build/generated/tunnelJniLibs`;
+builds the current APK for `arm64-v8a` from pinned sources into `app/build/generated/tunnelJniLibs`;
 the first build downloads the Go dependencies. See the [native build notes](app/src/main/native/tunnel/README.md).
 
 The current build script uses the existing `debug` signing configuration for update continuity; its name does not make this variant debuggable. A local build can update an installed copy only if its signing certificate matches. Do not confuse the source version with a published release.

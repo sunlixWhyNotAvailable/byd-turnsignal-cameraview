@@ -35,8 +35,8 @@ final class WeatherLocationMonitor {
     private volatile long epoch;
     private LocationManager manager;
     private WeatherFlpSource flp;
-    private Long networkUtc;
-    private long networkClockReadMs;
+    private final WeatherNetworkClock networkClock = new WeatherNetworkClock(SystemClock.class, Build.VERSION.SDK_INT >= 33);
+    private boolean networkClockFailed;
     private long flpStartedMs;
     private String flpDataState = "inactive";
     private volatile WeatherLocationSources.Selection selection =
@@ -197,17 +197,15 @@ final class WeatherLocationMonitor {
     private void evaluate() {
         if (!running || !wanted) return;
         long now = SystemClock.elapsedRealtime();
-        if (networkClockReadMs == 0 || now - networkClockReadMs >= 1000) {
-            networkClockReadMs = now;
-            try {
-                networkUtc = Build.VERSION.SDK_INT >= 33 ? SystemClock.currentNetworkTimeClock().millis()
-                        : (Long) SystemClock.class.getMethod("currentNetworkTimeMillis").invoke(null);
-            } catch (Exception | LinkageError error) {
-                networkUtc = null;
-                failure("network_clock", WeatherFlpSource.unwrap(error));
-            }
+        Long utcNow = networkClock.read(now);
+        if (networkClock.failure() != null) {
+            networkClockFailed = true;
+            failure("network_clock", networkClock.failure());
+        } else if (networkClockFailed) {
+            networkClockFailed = false;
+            synchronized (errors) { errors.removeIf(key -> key.startsWith("network_clock:")); }
+            event("weather_network_time", "state", "restored");
         }
-        Long utcNow = networkUtc == null ? null : networkUtc + now - networkClockReadMs;
         WeatherLocationSources.Selection next = sources.select(now, utcNow);
         WeatherLocationSources.Selection before = selection;
         selection = next;
@@ -256,6 +254,9 @@ final class WeatherLocationMonitor {
         subscribed.clear();
         nmeaSubscribed = false;
         if (flp != null) { flp.stop(); flp = null; }
+        networkClock.resetSample();
+        networkClockFailed = false;
+        synchronized (errors) { errors.clear(); }
     }
 
     private void failure(String operation, Throwable error) {

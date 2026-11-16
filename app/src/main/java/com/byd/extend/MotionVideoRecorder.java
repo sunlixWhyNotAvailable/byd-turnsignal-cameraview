@@ -385,6 +385,7 @@ public final class MotionVideoRecorder implements AutoCloseable {
                 ? "Three-second clip saved and deleted" : "Temporary recording did not finish: " + stopReason;
     }
 
+    @android.annotation.TargetApi(29) // The reflective capability check below precedes both direct calls on OEM frameworks.
     private static MediaCodec createHardwareAvcEncoder(int width, int height, int bitrate) throws IOException {
         try {
             MediaCodecInfo.class.getMethod("isHardwareAccelerated");
@@ -438,6 +439,7 @@ public final class MotionVideoRecorder implements AutoCloseable {
         thread.start();
     }
 
+    @android.annotation.SuppressLint("MissingPermission") // assertAudioCaptureAvailable checks the executing identity before capture.
     private void runAudioCapture() {
         AudioRecord recorder = null;
         MediaCodec encoder = null;

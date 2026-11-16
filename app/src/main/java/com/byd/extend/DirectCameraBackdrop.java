@@ -76,6 +76,7 @@ final class DirectCameraBackdrop extends View {
         }
     }
 
+    @android.annotation.TargetApi(29) // A non-null layer can only be created after updateLayer's API29 guard.
     private void releaseLayer() {
         if (layer == null) return;
         try (SurfaceControl.Transaction transaction = new SurfaceControl.Transaction()) {

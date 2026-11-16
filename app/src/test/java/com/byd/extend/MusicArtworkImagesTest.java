@@ -14,6 +14,27 @@ import static org.junit.Assert.*;
 @Config(sdk = 35, application = Application.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class MusicArtworkImagesTest {
+    @Test public void EmbeddedBitmapDoesNotRequirePrivilegedUriAccess() {
+        Bitmap cover = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
+        android.media.MediaMetadata metadata = new android.media.MediaMetadata.Builder()
+                .putBitmap(android.media.MediaMetadata.METADATA_KEY_ART, cover).build();
+        MusicArtworkImages images = new MusicArtworkImages(org.robolectric.RuntimeEnvironment.getApplication(),
+                (operation, error) -> fail(operation + ": " + error));
+        assertSame(cover, images.artwork("player", metadata, -1));
+    }
+    @Test public void FileAndCrossUserUrisAreRejectedBeforeResolverAccess() {
+        for (String uri : new String[]{"file:///private/cover.png", "content://10@media/cover", "content:/missing"})
+            assertThrows(SecurityException.class, () -> MusicArtworkImages.validateUri(android.net.Uri.parse(uri)));
+        MusicArtworkImages.validateUri(android.net.Uri.parse("content://media/cover"));
+        java.util.List<Throwable> errors = new java.util.ArrayList<>();
+        MusicArtworkImages images = new MusicArtworkImages(org.robolectric.RuntimeEnvironment.getApplication(),
+                (operation, error) -> errors.add(error));
+        assertNull(images.artwork("player", new android.media.MediaMetadata.Builder()
+                .putString(android.media.MediaMetadata.METADATA_KEY_ART_URI, "file:///private/cover.png").build(), -1));
+        assertEquals(1, errors.size());
+        assertTrue(errors.get(0).getMessage().contains("SecurityException"));
+        assertFalse(errors.get(0).getMessage().contains("/private/cover.png"));
+    }
     @Test public void rectangularCoverIsSquaredBeforeAddingUndistortedBadge() {
         Bitmap cover = Bitmap.createBitmap(480, 269, Bitmap.Config.ARGB_8888);
         cover.eraseColor(Color.BLUE);

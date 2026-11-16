@@ -22,6 +22,7 @@ import org.json.JSONObject;
 public final class DropBoxTombstoneCollector {
     private static final String TAG = "SYSTEM_TOMBSTONE_PROTO";
 
+    @android.annotation.SuppressLint("MissingPermission") // Actual shell UID is checked below; OEM permission denial is exported with its cause.
     public static void main(String[] args) {
         OutputStream binary = new FileOutputStream(FileDescriptor.out);
         System.setOut(System.err); // Framework initialization must not corrupt the binary archive.

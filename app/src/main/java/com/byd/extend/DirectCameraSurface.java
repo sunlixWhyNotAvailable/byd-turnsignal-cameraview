@@ -13,6 +13,7 @@ import android.view.ViewParent;
 import java.lang.reflect.Method;
 
 /** View-owned composition layer; its buffer queue survives view removal until the producer detaches. */
+@android.annotation.TargetApi(29) // BlindSpotCameraView selects this implementation only on API29+.
 final class DirectCameraSurface extends SurfaceView implements SurfaceHolder.Callback {
     interface Listener {
         void available();

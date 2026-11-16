@@ -12,6 +12,7 @@ import android.system.Os;
 import android.util.Base64;
 import com.byd.extend.artwork.MusicArtworkPolicy;
 import com.byd.extend.artwork.MusicArtworkWorker;
+import com.byd.extend.artwork.ArtworkFiles;
 import org.json.JSONObject;
 import java.io.*;
 import java.net.*;
@@ -130,7 +131,7 @@ final class MusicArtworkRuntime {
                                 output.println(new JSONObject().put("error", trace(failure)));
                             }
                         } else if ("error".equals(kind)) {
-                            workerFailed = true;
+                            if (!message.optString("operation").startsWith("orphan_")) workerFailed = true;
                             events.accept("music_artwork_error", new Object[]{"operation", message.optString("operation"), "stack", message.optString("stack")});
                         } else if ("published".equals(kind)) {
                             if (message.getBoolean("same_owner")) {
@@ -143,11 +144,25 @@ final class MusicArtworkRuntime {
                             if (!message.getBoolean("readback_matches")) error("publish_readback",
                                     new IOException("OEM artwork readback differs; same_owner=" + message.getBoolean("same_owner")
                                             + ", provider_result=" + message.getInt("provider_result")));
+                        } else if ("cleanup_request".equals(kind)) {
+                            String orphan = message.getString("image_id");
+                            if (message.getInt("user") != user || !orphan.matches("[a-f0-9]{32}") || orphan.equals(imageId))
+                                throw new SecurityException("Invalid artwork cleanup identity");
+                            boolean cleaned = false;
+                            try {
+                                ArtworkFiles.pruneImages(new File(MusicArtworkWorker.imagePrefix(user, orphan)), true);
+                                cleaned = true;
+                            } catch (Throwable secondary) { error("orphan_images_secondary", secondary); }
+                            output.println(new JSONObject().put("image_id", orphan).put("cleaned", cleaned));
+                        } else if ("cleanup_result".equals(kind)) {
+                            events.accept("music_artwork_cleanup", new Object[]{"removed", message.getInt("removed"),
+                                    "retained", message.getInt("retained")});
                         } else if ("finished".equals(kind)) {
                             finished = true;
-                            if (message.getBoolean("cleaned")) try { images.prune(null); }
+                            boolean imagesCleaned = false;
+                            if (message.getBoolean("cleaned")) try { images.prune(null); imagesCleaned = true; }
                             catch (Throwable secondary) { error("image_cleanup_secondary", secondary); }
-                            output.println("ACK");
+                            output.println(imagesCleaned ? "ACK" : "RETAIN");
                             events.accept("music_artwork_stopped", new Object[]{"released", message.getBoolean("cleaned"), "error", workerFailed});
                             if (workerFailed) synchronized (this) { failed = true; }
                             return;
@@ -194,7 +209,10 @@ final class MusicArtworkRuntime {
             String nextTrack = MusicArtworkPolicy.trackKey(controller.getPackageName() + ":" + controller.getSessionToken(),
                     text(metadata, MediaMetadata.METADATA_KEY_MEDIA_ID), text(metadata, MediaMetadata.METADATA_KEY_TITLE), text(metadata, MediaMetadata.METADATA_KEY_ARTIST));
             if (controller != previousController || metadata != previousMetadata || !nextTrack.equals(track)) {
-                Bitmap bitmap = loader.image(controller.getPackageName(), metadata);
+                int sessionUid = -1;
+                try { sessionUid = (Integer) controller.getSessionToken().getClass().getMethod("getUid").invoke(controller.getSessionToken()); }
+                catch (Throwable failure) { error("session_uid", failure); }
+                Bitmap bitmap = loader.image(controller.getPackageName(), metadata, sessionUid);
                 if (bitmap == null) path = null;
                 else if (path == null || previousImage == null || !bitmap.sameAs(previousImage)) {
                     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -213,16 +231,8 @@ final class MusicArtworkRuntime {
             return new JSONObject().put("active", true).put("track", track).put("cover", path == null ? JSONObject.NULL : path);
         }
         void prune(String displayed) throws IOException {
-            File[] files = directory.listFiles();
-            if (files == null) return;
-            for (File file : files) {
-                String name = file.getName();
-                if (name.matches("[a-f0-9]{64}\\.png") && (displayed == null
-                        || !file.getPath().equals(displayed) && !file.getPath().equals(path)
-                        && !file.getPath().equals(lastDisplayed))) Files.deleteIfExists(file.toPath());
-            }
+            ArtworkFiles.pruneImages(directory, displayed == null, displayed, path, lastDisplayed);
             lastDisplayed = displayed;
-            if (displayed == null) Files.deleteIfExists(directory.toPath());
         }
     }
 
@@ -282,7 +292,7 @@ final class MusicArtworkRuntime {
                 + "CLASSPATH=" + dir + "/worker.jar /system/bin/app_process /system/bin --nice-name=byd_music_artwork "
                 + MusicArtworkWorker.class.getName() + " " + port + " " + token + " " + user + " " + deadline + " " + imageId + "\n"
                 + "rc=$?\n[ \"$rc\" = 0 ] || { " + report + "; }\n"
-                + "if [ -f " + dir + "/complete ]; then rm -f " + dir + "/complete " + dir + "/worker.jar " + dir + "/bootstrap.log; rmdir " + dir + "; fi\nexit \"$rc\"\n";
+                + "if [ -f " + dir + "/complete ]; then rm -f " + dir + "/complete " + dir + "/worker.jar " + dir + "/bootstrap.log " + dir + "/released.properties; rmdir " + dir + "; fi\nexit \"$rc\"\n";
         return "/system/bin/nohup /system/bin/sh -c '" + body.replace("'", "'\\''") + "' </dev/null >/dev/null 2>&1 &";
     }
 }

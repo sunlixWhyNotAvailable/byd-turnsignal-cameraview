@@ -138,6 +138,7 @@ final class MotionCameraPreparation {
         } else reconcile();
     }
 
+    @android.annotation.SuppressLint("WrongConstant") // OEM service, not an AOSP Context constant.
     private void initialize() throws Exception {
         if (manager != null) return;
         Object next = context.getSystemService("auto");

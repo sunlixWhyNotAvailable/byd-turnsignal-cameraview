@@ -15,6 +15,10 @@ import java.net.*;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.Properties;
+import java.nio.file.Files;
+import android.system.Os;
+import android.system.StructStat;
 
 /** Fixed artwork-only entry point executed in cellsservice_host's Android namespace. */
 public final class MusicArtworkWorker {
@@ -54,6 +58,8 @@ public final class MusicArtworkWorker {
                 provider = new Provider(user);
                 event(out, "connected", "uid", android.os.Process.myUid(), "user", user,
                         "provider_uid", provider.uid);
+                try { reapReleased(in, out, user, token, nullable(provider.query(), "cover")); }
+                catch (Throwable secondary) { error(out, "orphan_cleanup_secondary", secondary); }
                 while (true) {
                     JSONObject state = state(in, out);
                     if (!state.optBoolean("active")) break;
@@ -116,6 +122,15 @@ public final class MusicArtworkWorker {
                 catch (Throwable failure) { error(out, "provider_release_secondary", failure); }
             }
         } catch (Throwable failure) { error(out, "worker", failure); }
+        if (cleaned) try {
+            Properties release = new Properties();
+            release.setProperty("user", Integer.toString(user));
+            release.setProperty("image_id", imageId);
+            release.setProperty("pid", Integer.toString(android.os.Process.myPid()));
+            try (FileOutputStream file = new FileOutputStream("/data/local/tmp/byd-extend-artwork-" + token + "/released.properties")) {
+                release.store(file, "provider release confirmed"); file.getFD().sync();
+            }
+        } catch (Throwable secondary) { error(out, "release_receipt_secondary", secondary); }
         event(out, "finished", "cleaned", cleaned);
         try {
             if ("ACK".equals(in.readLine()) && cleaned) {
@@ -128,6 +143,48 @@ public final class MusicArtworkWorker {
 
     public static String imagePrefix(int user, String token) {
         return "/storage/emulated/" + user + "/Download/.byd-extend-artwork/" + token + "/";
+    }
+
+    private static void reapReleased(BufferedReader in, PrintWriter out, int user, String token, String currentCover) throws Exception {
+        File[] sessions = new File("/data/local/tmp").listFiles();
+        if (sessions == null) throw new IOException("Cannot enumerate artwork executors");
+        int removed = 0, retained = 0;
+        for (File session : sessions) {
+            if (!session.getName().matches("byd-extend-artwork-[a-f0-9]{32}") || session.getName().endsWith(token)) continue;
+            retained++;
+            try {
+                StructStat owner = Os.lstat(session.getPath());
+                if (owner.st_uid != 0 || !android.system.OsConstants.S_ISDIR(owner.st_mode) || (owner.st_mode & 0022) != 0) continue;
+                File receipt = new File(session, "released.properties");
+                if (!receipt.exists()) continue; // Older or uncertain sessions are deliberately retained.
+                ArtworkFiles.regular(receipt);
+                if (Files.size(receipt.toPath()) > 2048) throw new IOException("Oversized artwork release receipt");
+                Properties release = new Properties();
+                try (FileInputStream file = new FileInputStream(receipt)) { release.load(file); }
+                String imageId = release.getProperty("image_id", "");
+                int ownerUser = Integer.parseInt(release.getProperty("user"));
+                int pid = Integer.parseInt(release.getProperty("pid"));
+                if (ownerUser != user || pid <= 0 || !imageId.matches("[a-f0-9]{32}")) continue;
+                if (processExists(pid) || MusicArtworkPolicy.owns(imagePrefix(user, imageId), currentCover)) continue;
+                event(out, "cleanup_request", "user", user, "image_id", imageId);
+                String line = in.readLine();
+                if (line == null) throw new EOFException("Artwork broker disconnected during orphan cleanup");
+                JSONObject reply = new JSONObject(line);
+                if (!imageId.equals(reply.optString("image_id"))) throw new IOException("Artwork cleanup acknowledgement identity mismatch");
+                if (!reply.optBoolean("cleaned")) continue;
+                ArtworkFiles.deleteReleasedWorker(session);
+                removed++; retained--;
+            } catch (Throwable secondary) { error(out, "orphan_session_secondary", secondary); }
+        }
+        if (removed != 0 || retained != 0) event(out, "cleanup_result", "removed", removed, "retained", retained);
+    }
+
+    private static boolean processExists(int pid) throws android.system.ErrnoException {
+        try { Os.stat("/proc/" + pid); return true; }
+        catch (android.system.ErrnoException failure) {
+            if (failure.errno == android.system.OsConstants.ENOENT) return false;
+            throw failure;
+        }
     }
 
     private static JSONObject state(BufferedReader in, PrintWriter out) throws Exception {

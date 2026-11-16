@@ -35,7 +35,7 @@ public final class ParkingRadarRuntime {
     public void start() { dispatch(() -> {
         if (running) return;
         running=true;
-        for (Source source:sources) source.register();
+        for (Source source:sources) { source.recovery.start(); source.register(); }
     }); }
     public void stop() { dispatch(() -> {
         running=false;
@@ -47,6 +47,9 @@ public final class ParkingRadarRuntime {
     private synchronized void publish() { sink.accept(state.snapshot()); }
     private void error(String operation, Source source, Integer fid, Throwable failure) {
         StringWriter stack=new StringWriter(); failure.printStackTrace(new PrintWriter(stack));
+        synchronized (source.failures) {
+            if (!source.failures.add(operation + ":" + fid + ":" + stack)) return;
+        }
         events.accept("distance_radar_error",new Object[]{"operation",operation,"family",source.family,
                 "device_class",source.deviceClass,"fid",fid,"generation",source.generation,
                 "error",failure.toString(),"stack",stack.toString()});
@@ -61,11 +64,17 @@ public final class ParkingRadarRuntime {
         Method unregister;
         volatile long generation;
         volatile long failedGeneration;
+        final ParkingRadarRecovery recovery = new ParkingRadarRecovery();
+        final java.util.Set<String> failures = new java.util.HashSet<>();
+        final java.util.concurrent.atomic.AtomicBoolean needsEvidence = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable pendingRecovery;
 
         Source(int family,String deviceClass,int[] fids) { this.family=family;this.deviceClass=deviceClass;this.fids=fids; }
 
         void register() {
             final long token=++generation;
+            recovery.registering(token);
+            needsEvidence.set(true);
             failedGeneration=0;
             state.begin(family,token); publish();
             try {
@@ -90,7 +99,12 @@ public final class ParkingRadarRuntime {
                                 return null;
                             }
                             int value=integerValue(getValue.invoke(args[0]));
-                            if (state.callback(fid,value,SystemClock.elapsedRealtime(),token)) publish();
+                            if (state.callback(fid,value,SystemClock.elapsedRealtime(),token)) {
+                                publish();
+                                if (value >= 0 && value <= (family == 1 ? 251 : 150)
+                                        && needsEvidence.compareAndSet(true, false))
+                                    handler.post(() -> received(token, fid, value));
+                            }
                         } else if ("onError".equals(method.getName())) {
                             String code=args!=null && args.length>0 ? String.valueOf(args[0]) : "missing";
                             String message=args!=null && args.length>1 ? String.valueOf(args[1]) : "missing";
@@ -111,11 +125,13 @@ public final class ParkingRadarRuntime {
                     long revision=state.revision(fid);
                     try {
                         int value=integerValue(read.invoke(device,new int[]{fid},Integer.TYPE));
-                        state.initialRead(fid,value,SystemClock.elapsedRealtime(),token,revision);
+                        if (state.initialRead(fid,value,SystemClock.elapsedRealtime(),token,revision))
+                            received(token, fid, value);
                     } catch (Throwable failure) { error("initial_get",this,fid,failure); }
                 }
                 publish();
-                if (failedGeneration!=token) events.accept("distance_radar_listener",new Object[]{"action","registered",
+                if (failedGeneration!=token && (recovery.attempts() == 0 || DiagnosticLogPolicy.extended()))
+                    events.accept("distance_radar_listener",new Object[]{"action","registered",
                         "family",family,"device_class",deviceClass,"generation",token,
                         "uid",android.os.Process.myUid(),"pid",android.os.Process.myPid(),
                         "user",android.os.Process.myUid()/100000,"package",context.getPackageName()});
@@ -126,9 +142,42 @@ public final class ParkingRadarRuntime {
             if (!state.fail(family,token,operation+"_error")) return;
             failedGeneration=token; publish();
             error(operation,this,null,failure);
-            handler.post(() -> { if (generation==token) detach(); });
+            handler.post(() -> {
+                if (generation != token) return;
+                detach();
+                if (!running) return;
+                long delay = recovery.failed(token, ParkingRadarRecovery.permanent(failure),
+                        SystemClock.elapsedRealtime());
+                if (delay < 0) {
+                    if (recovery.attempts() != 0) events.accept("distance_radar_recovery",
+                            new Object[]{"action", "stopped", "family", family,
+                                    "attempts", recovery.attempts(), "permanent", ParkingRadarRecovery.permanent(failure)});
+                    return;
+                }
+                if (DiagnosticLogPolicy.extended()) events.accept("parking_radar_recovery",
+                        new Object[]{"action", "scheduled", "family", family, "generation", token,
+                                "attempt", recovery.attempts(), "delay_ms", delay});
+                pendingRecovery = () -> {
+                    pendingRecovery = null;
+                    if (running && generation == token && recovery.take(token, SystemClock.elapsedRealtime())) register();
+                };
+                handler.postDelayed(pendingRecovery, delay);
+            });
+        }
+        void received(long token, int fid, int value) {
+            if (!running || generation != token || failedGeneration == token) return;
+            if (recovery.data(token, fid, value)) events.accept("distance_radar_recovery",
+                    new Object[]{"action", "recovered", "family", family, "generation", token});
+            if (value >= 0 && value <= (family == 1 ? 251 : 150)) {
+                needsEvidence.set(false);
+                synchronized (failures) { failures.clear(); }
+            }
         }
         void stop(String reason) {
+            if (pendingRecovery != null) { handler.removeCallbacks(pendingRecovery); pendingRecovery = null; }
+            recovery.stop();
+            needsEvidence.set(false);
+            synchronized (failures) { failures.clear(); }
             ++generation; failedGeneration=generation;
             state.invalidate(family,generation,reason); publish();
             detach();
@@ -150,7 +199,7 @@ public final class ParkingRadarRuntime {
     }
     static int integerValue(Object value) throws Exception {
         if (value instanceof Number) return ((Number)value).intValue();
-        if (value==null) throw new IllegalStateException("null radar value");
+        if (value==null) throw new IllegalArgumentException("null radar value");
         try { Field field=value.getClass().getField("intValue"); return field.getInt(value); }
         catch (NoSuchFieldException ignored) { return Integer.parseInt(String.valueOf(value)); }
     }

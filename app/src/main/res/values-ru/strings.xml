@@ -187,7 +187,7 @@
     <string name="share_logs">"поделиться логами"</string>
     <string name="clear_logs">"Очистить логи"</string>
     <string name="compatibility_package">"Экспорт конфигурации"</string>
-    <string name="system_details_for_compatibility_checks">"Данные системы для проверки совместимости"</string>
+    <string name="system_details_for_compatibility_checks">"Данные системы и доступные APK/библиотеки штатного Sentry для проверки совместимости. Полный пакет передавайте приватно; проверяйте диагностику перед публикацией."</string>
     <string name="share_compatibility_package">"поделиться пакетом совместимости"</string>
     <string name="camera_presets">"Пресеты камер"</string>
     <string name="export_and_load_camera_settings">"Экспорт и загрузка настроек камер"</string>

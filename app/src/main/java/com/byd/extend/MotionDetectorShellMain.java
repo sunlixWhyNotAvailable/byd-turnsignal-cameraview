@@ -2198,11 +2198,17 @@ public final class MotionDetectorShellMain {
     }
 
     private void cleanupHostBinding(String id) {
-        try { setMotionTelemetryDemand(id, false); } catch (Throwable ignored) { }
+        try { setMotionTelemetryDemand(id, false); }
+        catch (Throwable failure) { logHostCleanupFailure(id, "telemetry_demand_off", failure); }
         try { cameraOperation(MotionDetectorProtocol.CAMERA_END_WAKE, id, null, null, 0); }
-        catch (Throwable ignored) { }
+        catch (Throwable failure) { logHostCleanupFailure(id, "CAMERA_END_WAKE", failure); }
         try { cameraOperation(MotionDetectorProtocol.CAMERA_UNBIND_WORKER, id, null, null, 0); }
-        catch (Throwable ignored) { }
+        catch (Throwable failure) { logHostCleanupFailure(id, "CAMERA_UNBIND_WORKER", failure); }
+    }
+
+    private void logHostCleanupFailure(String id, String operation, Throwable failure) {
+        logEvent("motion_host_cleanup_failed", id, "operation", operation, "secondary", true,
+                "error", CameraViewingDiagnostics.describe(failure));
     }
 
     private int attachUiOnControl(String id, IBinder callback) throws Exception {

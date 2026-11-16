@@ -363,8 +363,10 @@ final class TurnSignalController {
                 data.writeInterfaceToken(TurnSignalShellProtocol.DESCRIPTOR);
                 data.writeString(packageName);
                 requireTransact(value, TurnSignalShellProtocol.TX_MUSIC_FOREGROUND, data, reply);
-            } catch (Exception ignored) {
+            } catch (Exception failure) {
                 // An observation must not launch a helper or interrupt camera/guard work.
+                emit("music_foreground_failed", "operation", "TX_MUSIC_FOREGROUND",
+                        "error", com.byd.extend.remote.CameraViewingDiagnostics.describe(failure));
             } finally { data.recycle(); reply.recycle(); }
         });
     }

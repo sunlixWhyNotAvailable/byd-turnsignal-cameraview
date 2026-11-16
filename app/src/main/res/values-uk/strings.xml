@@ -187,7 +187,7 @@
     <string name="share_logs">"поділитися логами"</string>
     <string name="clear_logs">"Очистити логи"</string>
     <string name="compatibility_package">"Пакет сумісності"</string>
-    <string name="system_details_for_compatibility_checks">"Дані системи для перевірки сумісності"</string>
+    <string name="system_details_for_compatibility_checks">"Дані системи та доступні APK/бібліотеки штатного Sentry для перевірки сумісності. Повний пакет передавайте приватно; перевіряйте діагностику перед публікацією."</string>
     <string name="share_compatibility_package">"поділитися пакетом сумісності"</string>
     <string name="camera_presets">"Пресети камер"</string>
     <string name="export_and_load_camera_settings">"Експорт і завантаження налаштувань камер"</string>

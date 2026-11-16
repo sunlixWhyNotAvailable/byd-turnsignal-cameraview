@@ -73,6 +73,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 @Composable
+@android.annotation.SuppressLint("ProduceStateDoesNotAssignValue") // The retained producer alias is assigned by the observed callback.
 internal fun rememberCameraChargeState(context: Context): CameraChargePolicy.State {
     val telemetry = remember(context) { CameraChargeTelemetry.get(context) }
     val state by produceState(initialValue = telemetry.snapshot(), telemetry) {

@@ -301,7 +301,7 @@ private fun FormScope.LogSettings(state: SettingsUiState, strings: UiStrings, co
         } }
         row("divider-3") { Divider(colors) }
         row("compatibility") { SettingsActionRow(strings.text("Експорт конфігурації", "Export configuration", "导出配置"),
-            strings.text("Дані системи для перевірки сумісності", "System details for compatibility checks"),
+            strings.resource(com.byd.extend.R.string.system_details_for_compatibility_checks),
             colors, verticalPadding = 8.dp) {
             Row(Modifier.width(586.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ActionButton(strings.text("Поділитись", "Share"), colors, Modifier.width(190.dp),

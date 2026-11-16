@@ -17,7 +17,7 @@ public final class DiagnosticLogPolicy {
     private static final Set<String> DETAIL = new HashSet<>(Arrays.asList(
             "telemetry_sample", "listener_event", "vehicle_state", "bsd_read", "reverse_steering_state", "log_state_repeated",
             "bsd_event_ignored", "parking_radar_snapshot", "parking_radar_state",
-            "parking_radar_event_ignored", "reverse_gear_read", "camera_source_hub_stats",
+            "parking_radar_event_ignored", "parking_radar_recovery", "reverse_gear_read", "camera_source_hub_stats",
             "camera_dewarp_stats", "camera_overlay_frame", "reverse_overlay_frame",
             "camera_config_read", "camera_config_received", "camera_config_applied",
             "overlay_geometry", "camera_overlay_geometry", "lifetime_counters",

@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.UUID;
@@ -198,17 +199,18 @@ final class OemAdbBridge {
                 + attempt.ticket.id + " output_callback_exit=$callback\"\nexit \"$rc\"\n";
     }
 
-    private static final class Output implements Closeable {
+    static final class Output implements Closeable {
         private static final int MAX_BYTES = 64 * 1024;
         final String token = UUID.randomUUID().toString().replace("-", "");
         final ServerSocket listener;
         final FutureTask<String> result;
+        private final long deadlineNanos;
         private volatile Socket peer;
         private volatile boolean closed;
 
         Output(long remainingMs) throws IOException {
+            deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1, remainingMs));
             listener = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
-            listener.setSoTimeout((int) Math.max(1, remainingMs));
             result = new FutureTask<>(this::receive);
             Thread reader = new Thread(result, "oem-adb-output");
             reader.setDaemon(true);
@@ -216,32 +218,60 @@ final class OemAdbBridge {
         }
 
         private String receive() throws IOException {
-            try (Socket socket = listener.accept()) {
-                peer = socket;
-                if (closed) throw new IOException("OEM output receiver closed");
-                socket.setSoTimeout(5000);
-                DataInputStream input = new DataInputStream(socket.getInputStream());
-                byte[] expected = (token + "\n").getBytes(StandardCharsets.US_ASCII);
-                byte[] actual = new byte[expected.length];
-                input.readFully(actual);
-                if (!MessageDigest.isEqual(expected, actual)) throw new IOException("OEM output token mismatch");
-                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                byte[] buffer = new byte[4096];
-                try {
-                    int count;
-                    while ((count = input.read(buffer)) != -1) {
-                        if (bytes.size() + count > MAX_BYTES) throw new IOException("OEM output exceeds 64 KiB");
-                        bytes.write(buffer, 0, count);
-                    }
-                    String text = bytes.toString(StandardCharsets.UTF_8.name());
-                    String footer = "\n" + token + "\n";
-                    if (!text.endsWith(footer)) throw new IOException("OEM output footer missing");
-                    return text.substring(0, text.length() - footer.length());
-                } catch (IOException error) {
-                    String partial = bytes.toString(StandardCharsets.UTF_8.name()).replace(token, "[redacted]");
-                    throw new IOException("OEM output incomplete; partial=<" + partial + ">", error);
+            IOException firstRejected = null;
+            try {
+                while (!closed) {
+                    listener.setSoTimeout(remainingTimeout(Integer.MAX_VALUE));
+                    try (Socket socket = listener.accept()) {
+                        peer = socket;
+                        if (closed) throw new IOException("OEM output receiver closed");
+                        DataInputStream input = new DataInputStream(socket.getInputStream());
+                        byte[] expected = (token + "\n").getBytes(StandardCharsets.US_ASCII);
+                        byte[] actual = new byte[expected.length];
+                        try {
+                            for (int offset = 0; offset < actual.length;) {
+                                socket.setSoTimeout(remainingTimeout(5000));
+                                int count = input.read(actual, offset, actual.length - offset);
+                                if (count < 0) throw new java.io.EOFException("OEM output authentication incomplete");
+                                offset += count;
+                            }
+                            if (!MessageDigest.isEqual(expected, actual)) throw new IOException("OEM output token mismatch");
+                        } catch (IOException rejected) {
+                            if (firstRejected == null) firstRejected = rejected;
+                            continue;
+                        }
+                        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                        byte[] buffer = new byte[4096];
+                        try {
+                            int count;
+                            while (true) {
+                                socket.setSoTimeout(remainingTimeout(5000));
+                                count = input.read(buffer);
+                                if (count == -1) break;
+                                if (bytes.size() + count > MAX_BYTES) throw new IOException("OEM output exceeds 64 KiB");
+                                bytes.write(buffer, 0, count);
+                            }
+                            String text = bytes.toString(StandardCharsets.UTF_8.name());
+                            String footer = "\n" + token + "\n";
+                            if (!text.endsWith(footer)) throw new IOException("OEM output footer missing");
+                            return text.substring(0, text.length() - footer.length());
+                        } catch (IOException error) {
+                            String partial = bytes.toString(StandardCharsets.UTF_8.name()).replace(token, "[redacted]");
+                            throw new IOException("OEM output incomplete; partial=<" + partial + ">", error);
+                        }
+                    } finally { peer = null; }
                 }
+                throw new IOException("OEM output receiver closed");
+            } catch (IOException failure) {
+                if (firstRejected != null) failure.addSuppressed(firstRejected);
+                throw failure;
             }
+        }
+
+        private int remainingTimeout(int capMs) throws SocketTimeoutException {
+            long left = deadlineNanos - System.nanoTime();
+            if (left <= 0) throw new SocketTimeoutException("OEM output deadline expired");
+            return (int) Math.min(capMs, Math.max(1, TimeUnit.NANOSECONDS.toMillis(left)));
         }
 
         String await(long remainingMs) throws IOException {

@@ -98,6 +98,7 @@ final class AvasMicrophoneCapture {
         }
     }
 
+    @android.annotation.SuppressLint("MissingPermission") // start() checks RECORD_AUDIO; this worker reports revoked grants through fail().
     private void capture(Session current) {
         AudioRecord recorder = null;
         AudioManager.AudioRecordingCallback recordingCallback = null;

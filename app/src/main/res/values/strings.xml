@@ -187,7 +187,7 @@
     <string name="share_logs">"share logs"</string>
     <string name="clear_logs">"Clear logs"</string>
     <string name="compatibility_package">"Compatibility package"</string>
-    <string name="system_details_for_compatibility_checks">"System details for compatibility checks"</string>
+    <string name="system_details_for_compatibility_checks">"System details and available OEM Sentry APKs/libraries for compatibility checks. Send the full package privately; review diagnostic data before publishing."</string>
     <string name="share_compatibility_package">"share compatibility package"</string>
     <string name="camera_presets">"Camera presets"</string>
     <string name="export_and_load_camera_settings">"Export and load camera settings"</string>

@@ -187,7 +187,7 @@
     <string name="share_logs">"分享日志"</string>
     <string name="clear_logs">"清除日志"</string>
     <string name="compatibility_package">"兼容性数据包"</string>
-    <string name="system_details_for_compatibility_checks">"用于兼容性检查的系统信息"</string>
+    <string name="system_details_for_compatibility_checks">"用于兼容性检查的系统信息及可获取的原厂哨兵模式 APK 和库文件。完整数据包请私下发送；公开诊断数据前请先检查其内容。"</string>
     <string name="share_compatibility_package">"分享兼容性数据包"</string>
     <string name="camera_presets">"摄像头预设"</string>
     <string name="export_and_load_camera_settings">"导出与加载摄像头设置"</string>
