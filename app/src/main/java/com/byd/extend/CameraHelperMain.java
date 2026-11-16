@@ -96,6 +96,7 @@ final class CameraHelperMain {
         private final CallbackSlot<IBinder> callbacks = new CallbackSlot<>();
         private int cameraId = -1;
         private String cameraTag = "none";
+        private String panoSourceTag = "none";
         private String discoveryError;
         private boolean terminalUnsupportedDiscovery;
         private Object camera;
@@ -761,7 +762,7 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Surface is invalid");
             }
-            if ("pano_h".equals(requestedCameraTag)) {
+            if (PanoCameraSource.isPanorama(requestedCameraTag)) {
                 return attachPersistentGroup(
                         activityGroup, new Surface[]{requestedSurface},
                         new int[]{requestedIndex}, requestId,
@@ -1063,7 +1064,7 @@ final class CameraHelperMain {
             String attachResult;
             try {
                 boolean attached = persistentSession.attachStockInput(
-                        new ReflectivePersistentCameraPort(camera), activityGroup, inputSurface,
+                        new ReflectivePersistentCameraPort(camera, panoSourceTag), activityGroup, inputSurface,
                         requestId, this::emit, producerCameraId, producerEpoch);
                 if (!attached) {
                     inputSurface.release();
@@ -1187,22 +1188,10 @@ final class CameraHelperMain {
             }
 
             int requestedCameraId;
-            try {
-                Class<?> info = Class.forName("android.hardware.BmmCameraInfo");
-                requestedCameraId = (Integer) info.getMethod("getCameraId", String.class)
-                        .invoke(null, "pano_h");
-            } catch (Throwable error) {
-                releaseSurfaces(requestedSurfaces);
-                String message = summary(error);
-                emit("camera_error", "stage", errorStage + "_discovery",
-                        "camera_tag", "pano_h", "camera_owner", requestedOwner,
-                        "request_id", requestId,
-                        "error", message);
-                return result("camera_error", message, -1, "pano_h");
-            }
+            requestedCameraId = panoCameraId();
             if (requestedCameraId < 0) {
                 releaseSurfaces(requestedSurfaces);
-                String message = "Camera tag is unavailable: pano_h";
+                String message = discoveryError;
                 emit("camera_error", "stage", errorStage + "_discovery",
                         "camera_tag", "pano_h", "camera_owner", requestedOwner,
                         "request_id", requestId,
@@ -1255,7 +1244,7 @@ final class CameraHelperMain {
                 multiSurfaces = requestedSurfaces;
                 multiPreviewIndexes = indexes.clone();
                 activeCameraId = requestedCameraId;
-                activeCameraTag = "pano_h";
+                activeCameraTag = panoSourceTag;
                 activeCameraOwner = requestedOwner;
                 activeCameraRequestId = requestId;
                 viewName = requestedView;
@@ -1390,7 +1379,7 @@ final class CameraHelperMain {
 
         private PersistentCameraPort persistentPort() {
             return camera == null || !persistentPanoProducer
-                    ? null : new ReflectivePersistentCameraPort(camera);
+                    ? null : new ReflectivePersistentCameraPort(camera, panoSourceTag);
         }
 
         synchronized void attachMotionDetector(Surface surface) throws Exception {
@@ -1411,7 +1400,7 @@ final class CameraHelperMain {
                     persistentSession.attachMotionInput(persistentPort());
                 } else {
                     int id = panoCameraId();
-                    if (id < 0) throw new IllegalStateException("pano_h unavailable");
+                    if (id < 0) throw new IllegalStateException(discoveryError);
                     String opened = openPersistentProducer(persistentSession.motionGroup,
                             new Surface[0], new int[0], 1, "motion_monitor", false, false,
                             null, "motion_open", id, false, 0, null);
@@ -1835,7 +1824,7 @@ final class CameraHelperMain {
                 requestedSurface.release();
                 throw new IllegalArgumentException("Camera tag is not allowed: " + requestedTag);
             }
-            if ("pano_h".equals(requestedTag)) {
+            if (PanoCameraSource.isPanorama(requestedTag)) {
                 ConsumerGroup group = CAMERA_OWNER_OVERLAY.equals(requestedOwner)
                         ? overlayGroup : activityGroup;
                 return attachPersistentGroup(
@@ -2252,7 +2241,7 @@ final class CameraHelperMain {
             int requestedCameraId = panoCameraId();
             if (requestedCameraId < 0) {
                 releaseSurfaces(requestedSurfaces);
-                String error = "Camera tag is unavailable: pano_h";
+                String error = discoveryError;
                 emit("camera_error", "stage", errorStage + "_discovery",
                         "camera_tag", "pano_h", "camera_owner", target.owner,
                         "request_id", requestId, "error", error);
@@ -2273,7 +2262,7 @@ final class CameraHelperMain {
                     rawSourceHub.collectStatsForWindow(0);
                 }
                 persistentSession.attach(
-                        new ReflectivePersistentCameraPort(camera), target,
+                        new ReflectivePersistentCameraPort(camera, panoSourceTag), target,
                         requestedSurfaces, requestedIndexes, requestId,
                         requestedView, exclusive, shellOwned,
                         this::emit, this::cancelPendingStock,
@@ -2396,7 +2385,7 @@ final class CameraHelperMain {
                 Object callbackProxy = Proxy.newProxyInstance(
                         callbackType.getClassLoader(), new Class<?>[]{callbackType}, eventHandler(opened));
                 avm.getMethod("setEventCallback", callbackType).invoke(opened, callbackProxy);
-                PersistentCameraPort port = new ReflectivePersistentCameraPort(opened);
+                PersistentCameraPort port = new ReflectivePersistentCameraPort(opened, panoSourceTag);
                 openedPort = port;
                 int openedHubGeneration = ++sourceHubGeneration;
                 openedHub = DirectCameraSourceHub.create(renderingContext, new DirectCameraSourceHub.Listener() {
@@ -2797,7 +2786,7 @@ final class CameraHelperMain {
             boolean[] shellCloseQueued = {false};
             try {
                 handled = persistentSession.failConsumer(
-                        new ReflectivePersistentCameraPort(camera), failedSurface, index,
+                        new ReflectivePersistentCameraPort(camera, panoSourceTag), failedSurface, index,
                         error, this::emit, (reason, requestId) -> {
                             boolean queued = cancelPendingStock(reason, requestId);
                             shellCloseQueued[0] |= queued;
@@ -2853,7 +2842,7 @@ final class CameraHelperMain {
                     && reverseStockCloseProducerEpoch == producerEpoch));
             try {
                 outcome = persistentSession.close(
-                        new ReflectivePersistentCameraPort(camera), group,
+                        new ReflectivePersistentCameraPort(camera, panoSourceTag), group,
                         reason, expectedRequestId,
                         this::emit, this::cancelPendingStock,
                         producerCameraId, producerEpoch, stockClosePending,
@@ -3018,7 +3007,7 @@ final class CameraHelperMain {
             ActivityPreviewState.Snapshot<Surface> retiringActivityPreview =
                     activityPreview.close(false);
             TeardownOutcome outcome = persistentSession.tearDown(
-                    active == null ? null : new ReflectivePersistentCameraPort(active),
+                    active == null ? null : new ReflectivePersistentCameraPort(active, panoSourceTag),
                     reason, failure, closeStock, stockRequestId,
                     shellCloseAlreadyQueued, this::queueStockClose,
                     this::emit, closedEpoch, retiringActivityPreview,
@@ -3232,7 +3221,7 @@ final class CameraHelperMain {
 
         private void refreshPersistentLegacyState() {
             activeCameraId = producerCameraId;
-            activeCameraTag = "pano_h";
+            activeCameraTag = panoSourceTag;
             ConsumerGroup active = reverseGroup.has()
                     ? reverseGroup : activityGroup.has() ? activityGroup
                     : overlayGroup.has() ? overlayGroup
@@ -3370,11 +3359,17 @@ final class CameraHelperMain {
         }
 
         private int panoCameraId() {
+            if (persistentPanoProducer) return producerCameraId;
             try {
                 Class<?> info = Class.forName("android.hardware.BmmCameraInfo");
-                return (Integer) info.getMethod("getCameraId", String.class)
-                        .invoke(null, "pano_h");
+                Method lookup = info.getMethod("getCameraId", String.class);
+                PanoCameraSource source = PanoCameraSource.resolve(
+                        tag -> (Integer) lookup.invoke(null, tag));
+                panoSourceTag = source.tag;
+                discoveryError = null;
+                return source.id;
             } catch (Throwable error) {
+                panoSourceTag = "none";
                 discoveryError = summary(error);
                 return -1;
             }
@@ -5245,10 +5240,16 @@ final class CameraHelperMain {
                 implements PersistentCameraPort {
             private final Object target;
             private final Class<?> type;
+            private final String sourceTag;
 
             ReflectivePersistentCameraPort(Object target) {
+                this(target, "");
+            }
+
+            ReflectivePersistentCameraPort(Object target, String sourceTag) {
                 this.target = target;
                 type = target.getClass();
+                this.sourceTag = sourceTag;
             }
 
             @Override
@@ -5257,7 +5258,8 @@ final class CameraHelperMain {
                 boolean added = false;
                 try {
                     added = invokeBoolean(type, target, "addPreviewSurface",
-                            new Class<?>[]{Surface.class, int.class}, value, index);
+                            new Class<?>[]{Surface.class, int.class}, value,
+                            PanoCameraSource.physicalPreviewIndex(sourceTag, index));
                     return added;
                 } finally {
                     CameraInputQueue.end(value, inputToken, added);
@@ -5267,7 +5269,8 @@ final class CameraHelperMain {
             @Override
             public boolean remove(Surface value, int index) throws Exception {
                 boolean removed = invokeBoolean(type, target, "rmPreviewSurface",
-                        new Class<?>[]{Surface.class, int.class}, value, index);
+                        new Class<?>[]{Surface.class, int.class}, value,
+                            PanoCameraSource.physicalPreviewIndex(sourceTag, index));
                 if (removed) CameraInputQueue.detach(value);
                 return removed;
             }
@@ -5646,6 +5649,12 @@ final class CameraHelperMain {
                     && "camera_viewing".equals(fieldString(fields, "camera_owner"))
                     && viewingOutput != null) viewingOutput.failed("camera_source_failed");
             if (!DiagnosticLogPolicy.shouldProduce(kind)) return;
+            if (PanoCameraSource.isPanorama(fieldString(fields, "camera_tag"))) {
+                Object[] physicalFields = java.util.Arrays.copyOf(fields, fields.length + 2);
+                physicalFields[fields.length] = "physical_camera_tag";
+                physicalFields[fields.length + 1] = panoSourceTag;
+                fields = physicalFields;
+            }
             DiagnosticEvent event = new DiagnosticEvent("helper", kind, fields);
             if (DiagnosticLogPolicy.diagnosticOnly(kind)) diagnosticEvents.appendEvent(event);
             else callbackHandler.post(() -> forwardLine(event.line()));
@@ -5960,7 +5969,7 @@ final class CameraHelperMain {
             }
             try {
                 persistentSession.invalidateStockAvmGroup(
-                        new ReflectivePersistentCameraPort(camera),
+                        new ReflectivePersistentCameraPort(camera, panoSourceTag),
                         "stock_avm_shell_died", this::emit,
                         producerCameraId, producerEpoch);
                 refreshPersistentLegacyState();
@@ -5980,7 +5989,7 @@ final class CameraHelperMain {
             if (persistentPanoProducer) {
                 try {
                     persistentSession.invalidateCameraShellGroups(
-                            new ReflectivePersistentCameraPort(camera),
+                            new ReflectivePersistentCameraPort(camera, panoSourceTag),
                             "camera_shell_died", this::emit,
                             producerCameraId, producerEpoch);
                     refreshPersistentLegacyState();
@@ -6004,7 +6013,7 @@ final class CameraHelperMain {
                         || !PersistentSession.isStockAvmGroup(activityGroup)) return;
                 try {
                     persistentSession.invalidateStockAvmGroup(
-                            new ReflectivePersistentCameraPort(camera), reason, this::emit,
+                            new ReflectivePersistentCameraPort(camera, panoSourceTag), reason, this::emit,
                             producerCameraId, producerEpoch);
                     refreshPersistentLegacyState();
                     closePersistentProducerIfIdle(reason, shellCloseQueued);
@@ -6167,7 +6176,7 @@ final class CameraHelperMain {
                     || !PersistentSession.isReverseStockAvmGroup(activityGroup)) return;
             try {
                 persistentSession.invalidateStockAvmGroup(
-                        new ReflectivePersistentCameraPort(camera), reason, this::emit,
+                        new ReflectivePersistentCameraPort(camera, panoSourceTag), reason, this::emit,
                         producerCameraId, producerEpoch);
                 refreshPersistentLegacyState();
                 closePersistentProducerIfIdle(reason);
