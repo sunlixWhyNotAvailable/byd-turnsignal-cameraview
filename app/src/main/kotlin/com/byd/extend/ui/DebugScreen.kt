@@ -90,7 +90,7 @@ private fun DebugHeader(
     onAction: (BydExtendUiAction) -> Unit,
 ) {
     Column(Modifier.width(400.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        PageTitle(strings.tabs[6], strings.text("Ручні перевірки поворотників та камер",
+        PageTitle(strings.tabs[7], strings.text("Ручні перевірки поворотників та камер",
             "Manual turn-signal and camera checks"), colors)
         Panel(colors, Modifier.fillMaxWidth()) {
             Segmented(strings.debugModes, state.mode.ordinal, colors, Modifier.fillMaxWidth(), modeIndicatorPosition) {

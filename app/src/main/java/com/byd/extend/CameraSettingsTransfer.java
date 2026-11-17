@@ -304,7 +304,10 @@ public final class CameraSettingsTransfer {
                 : legacyPlacementPlan(preferences, copy, geometry, true);
         SharedPreferences.Editor editor = preferences.edit();
         for (String key : preferences.getAll().keySet()) {
-            if (isLegacyAllowedKey(key) && (!DistanceWidgetStore.transferKeys().contains(key) || copy.containsKey(key))) editor.remove(key);
+            boolean preserveMissing = DistanceWidgetStore.transferKeys().contains(key)
+                    || MusicSettings.ARTWORK.equals(key) || MusicSettings.PLAYER_ICON.equals(key)
+                    || MusicSettings.EXCLUDED.equals(key);
+            if (isLegacyAllowedKey(key) && (!preserveMissing || copy.containsKey(key))) editor.remove(key);
         }
         editor.putBoolean(HazardThanksSettings.ENABLED, HazardThanksSettings.DEFAULT_ENABLED)
                 .putInt(HazardThanksSettings.FLASH_COUNT, HazardThanksSettings.DEFAULT_FLASH_COUNT)
@@ -1784,6 +1787,11 @@ public final class CameraSettingsTransfer {
     }
 
     private static void validateLegacyType(String key, Object value) {
+        if (MusicSettings.EXCLUDED.equals(key)) {
+            if (!(value instanceof String)) throw new IllegalArgumentException("string required: " + key);
+            MusicSettings.decode((String) value);
+            return;
+        }
         if (DistanceWidgetStore.transferKeys().contains(key)) { DistanceWidgetStore.validateTransfer(key, value); return; }
         if (legacyBooleanKey(key)) {
             if (!(value instanceof Boolean)) throw new IllegalArgumentException("boolean required: " + key);
@@ -1799,7 +1807,8 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean legacyBooleanKey(String key) {
-        return key.equals(MotionConfig.CELLULAR_PREF)
+        return key.equals(MusicSettings.ARTWORK) || key.equals(MusicSettings.PLAYER_ICON)
+                || key.equals(MotionConfig.CELLULAR_PREF)
                 || key.equals(MotionConfig.CELLULAR_SCREEN_OFF_PREF)
                 || isBooleanKey(key) || key.equals("guard_enabled") || key.equals("music_visualizer_enabled")
                 || key.equals("parking_any_enabled") || key.equals("weather_enabled")
@@ -1814,7 +1823,7 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean legacyStringKey(String key) {
-        return key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS)
+        return key.equals(MusicSettings.EXCLUDED) || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS)
                 || key.equals(CameraButtonBindings.HAZARD_THANKS_PRESS + "_android")
                 || key.equals(CameraButtonBindings.HAZARD_THANKS_SOURCE);
     }
@@ -1828,6 +1837,8 @@ public final class CameraSettingsTransfer {
     }
 
     private static boolean isLegacyAllowedKey(String key) {
+        if (MusicSettings.ARTWORK.equals(key) || MusicSettings.PLAYER_ICON.equals(key)
+                || MusicSettings.EXCLUDED.equals(key)) return true;
         if (DistanceWidgetStore.transferKeys().contains(key)) return true;
         if (key == null || key.isEmpty()) return false;
         if (key.equals(MotionConfig.CELLULAR_GENERATION_PREF)) return false;

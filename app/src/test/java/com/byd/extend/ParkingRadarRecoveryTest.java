@@ -4,6 +4,24 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ParkingRadarRecoveryTest {
+    @Test public void sharedSnapshotOpensParkingAndReaderFailureClosesItWithoutDebounce() {
+        ParkingRadarState radar = new ParkingRadarState();
+        radar.begin(0, 1); radar.registered(0, 1);
+        radar.callback(ParkingCameraProfile.RADAR_FID_FL, 20, 1000, 1);
+        ParkingRadarState.Snapshot observed = radar.snapshot();
+        ParkingCameraSettings.Rule[] rules = new ParkingCameraSettings.Rule[ParkingCameraProfile.COUNT];
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values())
+            rules[profile.id] = new ParkingCameraSettings.Rule(profile.id == ParkingCameraProfile.FL, 30, false);
+        ParkingCameraTriggerPolicy.State parking = new ParkingCameraTriggerPolicy.State();
+        assertEquals(1 << ParkingCameraProfile.FL,
+                parking.update(rules, 10, observed.raw(), observed.valid(), 5, true, 1000, 1000));
+        assertEquals(20, observed.distances()[7], 0);
+        radar.fail(0, 1, "reader_error");
+        ParkingRadarState.Snapshot failed = radar.snapshot();
+        assertEquals(0, parking.update(rules, 10, failed.raw(), failed.valid(), 5, true, 1001, 1001));
+        assertTrue(Double.isNaN(failed.distances()[7]));
+        assertEquals(20, observed.distances()[7], 0); // Other consumers retain an immutable snapshot.
+    }
     private final int fid = ParkingCameraProfile.coreRadarFids()[0];
 
     @Test public void onlyObservedDataEnablesAndResetsThreeBoundedAttempts() {

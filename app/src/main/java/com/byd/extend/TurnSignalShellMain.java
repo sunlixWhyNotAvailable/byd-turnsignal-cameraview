@@ -384,8 +384,11 @@ public final class TurnSignalShellMain {
                     boolean enabled = data.readInt() != 0;
                     boolean captureFocusOnOpen = data.readInt() != 0;
                     boolean engineVisualizationEnabled = data.readInt() != 0;
+                    boolean showArtwork = data.readInt() != 0;
+                    boolean showPlayerIcon = data.readInt() != 0;
+                    java.util.Set<String> excluded = MusicSettings.decode(data.readString());
                     musicRuntime.configure(enabled, captureFocusOnOpen,
-                            engineVisualizationEnabled);
+                            engineVisualizationEnabled, showArtwork, showPlayerIcon, excluded);
                     reply.writeNoException();
                     return true;
                 }
@@ -417,7 +420,7 @@ public final class TurnSignalShellMain {
                     return true;
                 }
                 if (code == TurnSignalShellProtocol.TX_CONFIGURE_PARKING_RADAR) {
-                    // Retired parking-camera setting; Distance owns its read-only subscription.
+                    // CameraRuntimeHost owns the shared radar subscription from its settings snapshot.
                     data.readInt();
                     reply.writeNoException();
                     return true;

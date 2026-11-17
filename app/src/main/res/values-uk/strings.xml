@@ -225,8 +225,8 @@
     <string name="index_3_right">"Index 3 • right"</string>
     <string name="index_4_front">"Index 4 • front"</string>
     <string name="slider_label">"%1$s • повзунок"</string>
-    <string name="rearview_mirror">"Дзеркало заднього виду"</string>
-    <string name="enable_rearview_mirror">"Увімкнути дзеркало заднього виду"</string>
+    <string name="rearview_mirror">"Заднє дзеркало"</string>
+    <string name="enable_rearview_mirror">"Увімкнути заднє дзеркало"</string>
     <string name="mirror_gestures">"Перетягніть, щоб перемістити. Утримуйте, щоб приховати до наступного відкриття застосунку. Натискання крізь камеру не проходять."</string>
     <string name="mirror_permission">"Дозволити показ поверх інших застосунків"</string>
     <string name="mirror_cluster_unavailable">"Другий дисплей недоступний. Розташування на приборці показане лише тут; віджет не переноситься на планшет."</string>
@@ -316,4 +316,13 @@
     <string name="cameras_initial_composition">"Повна композиція"</string>
     <string name="cameras_initial_exterior">"Зовнішні"</string>
     <string name="cameras_initial_interior">"Внутрішні"</string>
+    <string name="music_show_artwork">"Показувати обкладинку композиції"</string>
+    <string name="music_show_player_icon">"Показувати іконку плеєра"</string>
+    <string name="music_exclude_visualization">"Виключити з візуалізації"</string>
+    <string name="music_excluded_count">"Обрано: %1$d"</string>
+    <string name="music_clear_exclusions">"Скинути все"</string>
+    <string name="music_apps_search">"Пошук застосунків"</string>
+    <string name="music_apps_loading">"Завантаження застосунків…"</string>
+    <string name="music_apps_error">"Не вдалося завантажити перелік застосунків"</string>
+    <string name="music_apps_empty">"Застосунків не знайдено"</string>
 </resources>

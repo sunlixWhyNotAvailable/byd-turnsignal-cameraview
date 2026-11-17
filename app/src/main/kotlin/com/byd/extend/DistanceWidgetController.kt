@@ -18,6 +18,7 @@ class DistanceWidgetController internal constructor(
     private val handler: Handler,
     private val event: BiConsumer<String, Array<Any>>,
     private val previewSink: Consumer<Bundle>,
+    private val radarDemand: Consumer<Boolean>,
 ) {
     private var settings = DistanceWidgetSettings()
     private var frame = DistanceFrame.unavailable(0, 0, "inactive")
@@ -29,10 +30,9 @@ class DistanceWidgetController internal constructor(
     private var stopped = false
     private var needed = false
     private val sources = DistanceSources()
-    private var radarThread: android.os.HandlerThread? = null
-    private var radar: ParkingRadarRuntime? = null
-    private var radarPackets: LatestValueDispatcher<ParkingRadarState.Snapshot>? = null
-    private var radarEpoch = 0L
+    private val radarPackets = LatestValueDispatcher<ParkingRadarState.Snapshot>(handler::post) { snapshot, _ ->
+        if (!stopped && needed) { sources.radar(snapshot); publishFrame() }
+    }
     private val diagnosticSampler = DistanceDiagnosticSampler()
     private val publishTiming = DiagnosticTimingWindow("work_us", "cpu_us", "view_us", "preview_us", "diagnostic_submit_us")
     private val pendingDiagnostic = Runnable { if (!stopped) publishDiagnostic() }
@@ -97,6 +97,8 @@ class DistanceWidgetController internal constructor(
         reconcile(); publishPreview()
     }
     fun loggingChanged() = dispatch { settingsDiagnostic(); if (needed) publishFrame() }
+    @JvmName("radarSnapshot")
+    internal fun radarSnapshot(snapshot: ParkingRadarState.Snapshot) { radarPackets.offer(snapshot) }
     fun toggle() = dispatch {
         if (!settings.enabled) return@dispatch
         context.settings.edit().putBoolean(DistanceWidgetStore.HIDDEN, !settings.hiddenByButton).apply()
@@ -111,19 +113,9 @@ class DistanceWidgetController internal constructor(
         val next = powerOn && (settings.enabled || preview)
         if (needed != next) {
             needed = next
-            val epoch = ++radarEpoch
-            radarPackets?.clear()
-            if (next) {
-                val thread = radarThread ?: android.os.HandlerThread("distance-radar").also { it.start(); radarThread = it }
-                val packets = LatestValueDispatcher<ParkingRadarState.Snapshot>(handler::post) { snapshot, _ ->
-                    if (!stopped && needed && radarEpoch == epoch) { sources.radar(snapshot); publishFrame() }
-                }
-                radarPackets = packets
-                radar = ParkingRadarRuntime(identity, Handler(thread.looper), event, packets::offer).also { it.start() }
-            } else {
-                radar?.stop(); radar = null; radarPackets = null
-                sources.clear()
-            }
+            radarPackets.clear()
+            if (!next) sources.clear()
+            radarDemand.accept(next)
         }
         source.setNeeded(next)
         publishFrame()
@@ -330,9 +322,8 @@ class DistanceWidgetController internal constructor(
             stopped = true
             handler.removeCallbacks(pendingDiagnostic)
             handler.removeCallbacks(prepareWindow); prepareQueued = false
-            needed = false; ++radarEpoch; radarPackets?.clear()
-            radar?.stop(); radar = null; sources.clear()
-            radarThread?.quitSafely(); radarThread = null
+            needed = false; radarPackets.clear(); sources.clear()
+            radarDemand.accept(false)
             source.setNeeded(false)
             displayManager?.unregisterDisplayListener(displayListener)
             hosts.values.forEach {

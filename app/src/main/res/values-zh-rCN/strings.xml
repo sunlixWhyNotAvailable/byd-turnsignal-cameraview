@@ -316,4 +316,13 @@
     <string name="cameras_initial_composition">"完整组合"</string>
     <string name="cameras_initial_exterior">"车外"</string>
     <string name="cameras_initial_interior">"车内"</string>
+    <string name="music_show_artwork">"显示曲目封面"</string>
+    <string name="music_show_player_icon">"显示播放器图标"</string>
+    <string name="music_exclude_visualization">"从可视化中排除"</string>
+    <string name="music_excluded_count">"已选择：%1$d"</string>
+    <string name="music_clear_exclusions">"清除全部"</string>
+    <string name="music_apps_search">"搜索应用"</string>
+    <string name="music_apps_loading">"正在加载应用…"</string>
+    <string name="music_apps_error">"无法加载应用列表"</string>
+    <string name="music_apps_empty">"未找到应用"</string>
 </resources>

@@ -215,7 +215,8 @@ public final class CameraProbeActivity extends ComponentActivity
     private static final int TAB_REVERSE_CAMERAS = 5;
     private static final int TAB_MUSIC = 6;
     private static final int TAB_SETTINGS = 7;
-    private static final int TAB_PARKING_CAMERAS = 8;
+    private static final int TAB_DISTANCE_WIDGET = 8;
+    private static final int TAB_PARKING_CAMERAS = 10;
     private static final int TAB_REARVIEW_MIRROR = 9;
     private static final int REVERSE_INSPECTOR_POSITION = 0;
     private static final int REVERSE_INSPECTOR_CROP = 1;
@@ -1708,13 +1709,14 @@ public final class CameraProbeActivity extends ComponentActivity
         if (settingsTransferInProgress || settingsReloadPending || logExportInProgress
                 || compatibilityExportInProgress || shutdownRequested || activityDestroyed
                 || !LegacySettingsImporter.needsAccessRestore(this)) return;
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(runtimeText(R.string.runtime_legacy_restore_title))
                 .setMessage(runtimeText(R.string.runtime_legacy_restore_message))
                 .setNegativeButton(runtimeText(R.string.runtime_cancel), null)
                 .setPositiveButton(runtimeText(R.string.runtime_restore_access),
-                        (dialog, which) -> restoreLegacyAccess())
+                        (choice, which) -> restoreLegacyAccess())
                 .show();
+        DialogButtonOrder.apply(dialog);
     }
 
     private void restoreLegacyAccess() {
@@ -1804,6 +1806,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         applySettingsTransfer(legacy, values))
                 .create();
         settingsTransferDialog.show();
+        DialogButtonOrder.apply(settingsTransferDialog);
     }
 
     private void applySettingsTransfer(boolean legacy, Map<String, Object> values) {
@@ -3832,6 +3835,11 @@ public final class CameraProbeActivity extends ComponentActivity
             }
         } else if (action instanceof BydExtendUiAction.SetProfileBorder) {
             saveProductionProfileBorder((BydExtendUiAction.SetProfileBorder) action);
+        } else if (action instanceof BydExtendUiAction.SetMusicExclusions) {
+            preferences.edit().putString(MusicSettings.EXCLUDED,
+                    MusicSettings.encode(((BydExtendUiAction.SetMusicExclusions) action).getPackages())).apply();
+            CameraHelperService.musicSettingsChanged(this);
+            updateControls();
         } else if (action instanceof BydExtendUiAction.Toggle) {
             handleProductionToggle((BydExtendUiAction.Toggle) action);
         } else if (action instanceof BydExtendUiAction.CommitNumber) {
@@ -4771,6 +4779,7 @@ public final class CameraProbeActivity extends ComponentActivity
     private static int rootTabToLegacy(RootTab tab) {
         if (tab == RootTab.Blind) return TAB_CAMERAS;
         if (tab == RootTab.Parking) return TAB_PARKING_CAMERAS;
+        if (tab == RootTab.Distance) return TAB_DISTANCE_WIDGET;
         if (tab == RootTab.Reverse) return TAB_REVERSE_CAMERAS;
         if (tab == RootTab.Mirror) return TAB_REARVIEW_MIRROR;
         if (tab == RootTab.Settings) return TAB_SETTINGS;
@@ -4793,6 +4802,10 @@ public final class CameraProbeActivity extends ComponentActivity
             } else if (id == ToggleId.Music) {
                 preferences.edit().putBoolean("music_visualizer_enabled", value).apply();
                 onMusicEnabledChanged(value);
+            } else if (id == ToggleId.MusicArtwork || id == ToggleId.MusicPlayerIcon) {
+                preferences.edit().putBoolean(id == ToggleId.MusicArtwork
+                        ? MusicSettings.ARTWORK : MusicSettings.PLAYER_ICON, value).apply();
+                onMusicOptionsChanged();
             } else if (id == ToggleId.MusicCaptureFocusOnOpen) {
                 if (!preferences.getBoolean("music_visualizer_enabled", false)) return;
                 preferences.edit().putBoolean("music_capture_focus_on_open", value).apply();
@@ -5128,7 +5141,8 @@ public final class CameraProbeActivity extends ComponentActivity
                     productionUi.getState().getBlind().getSelectedGroup(),
                     productionUi.getState().getBlind().getSelectedSide());
         }
-        if (selectedTab == TAB_PARKING_CAMERAS) return null;
+        if (selectedTab == TAB_PARKING_CAMERAS)
+            return new CameraProfileId.Parking(productionUi.getState().getParking().getSelectedView());
         if (selectedTab == TAB_REVERSE_CAMERAS) {
             ReverseElement element = productionUi.getState().getReverse().getSelectedElement();
             if (element == ReverseElement.Background || element == ReverseElement.Widget) return null;
@@ -7782,7 +7796,7 @@ public final class CameraProbeActivity extends ComponentActivity
         return tab == TAB_GUARD || tab == TAB_CAMERAS || tab == TAB_CAMERA_DEBUG
                 || tab == TAB_DIRECT_CAMERA_DEBUG || tab == TAB_CAMERA_CALIBRATION
                 || tab == TAB_REVERSE_CAMERAS || tab == TAB_MUSIC
-                || tab == TAB_SETTINGS || tab == TAB_PARKING_CAMERAS
+                || tab == TAB_SETTINGS || tab == TAB_PARKING_CAMERAS || tab == TAB_DISTANCE_WIDGET
                 || tab == TAB_REARVIEW_MIRROR;
     }
 
@@ -9289,7 +9303,8 @@ public final class CameraProbeActivity extends ComponentActivity
             return productionUi.getState().getBlind().getSection()
                     == CameraSection.Calibration;
         }
-        if (selectedTab == TAB_PARKING_CAMERAS) return false;
+        if (selectedTab == TAB_PARKING_CAMERAS)
+            return productionUi.getState().getParking().getSection() == CameraSection.Calibration;
         return selectedTab == TAB_REVERSE_CAMERAS
                 && productionUi.getState().getReverse().getSection()
                         == CameraSection.Calibration;
@@ -9709,7 +9724,6 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void maybeOpenProductionPreview() {
-        if (selectedTab == TAB_PARKING_CAMERAS) return;
         if (!canAutoOpenSelectedPreview()
                 || (selectedTab != TAB_CAMERAS && selectedTab != TAB_PARKING_CAMERAS
                         && selectedTab != TAB_REARVIEW_MIRROR)
@@ -11474,6 +11488,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 })
                 .create();
         legacyImportOfferDialog.show();
+        DialogButtonOrder.apply(legacyImportOfferDialog);
         record("legacy_import_offer", "state", "shown");
     }
 
@@ -12595,6 +12610,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private static boolean isAutoPreviewTab(int tab) {
         return tab == TAB_CAMERAS
+                || tab == TAB_PARKING_CAMERAS
                 || tab == TAB_CAMERA_CALIBRATION
                 || tab == TAB_REARVIEW_MIRROR
                 || tab == TAB_REVERSE_CAMERAS;

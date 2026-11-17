@@ -105,7 +105,7 @@ internal fun ReverseScreen(
     ScreenSurface(colors, scroll = false, compact = true) {
         if (state.section == CameraSection.Calibration && cameraElement) {
             CameraWorkspace(
-                pageTab = 3, section = state.section, reverse = true, calibrationEnabled = true,
+                pageTab = 4, section = state.section, reverse = true, calibrationEnabled = true,
                 previewTitle = strings.text("Калібрування", "Calibration"), strings = strings, colors = colors,
                 onSection = {
                     onAction(BydExtendUiAction.Select(SelectionTarget.Simple(SelectionId.CameraSection), it.ordinal))
@@ -123,7 +123,7 @@ internal fun ReverseScreen(
             )
         } else {
             CameraWorkspace(
-                pageTab = 3, section = state.section, reverse = true, calibrationEnabled = cameraElement,
+                pageTab = 4, section = state.section, reverse = true, calibrationEnabled = cameraElement,
                 previewTitle = strings.text("Композиція заднього ходу", "Reverse composition") +
                     " • ${strings.reverseElements[selected.ordinal]}",
                 strings = strings, colors = colors,

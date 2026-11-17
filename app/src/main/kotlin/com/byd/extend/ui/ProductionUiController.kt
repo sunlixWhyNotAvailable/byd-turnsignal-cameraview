@@ -505,6 +505,7 @@ class ProductionUiController @JvmOverloads constructor(
             action is BydExtendUiAction.MoveProfile ||
             action is BydExtendUiAction.SetProfileGeometry ||
             action is BydExtendUiAction.SetProfileBorder ||
+            action is BydExtendUiAction.SetMusicExclusions ||
             action is BydExtendUiAction.Select && !action.target.isLocalSelection()) reload()
     }
 
@@ -1109,7 +1110,8 @@ class ProductionUiController @JvmOverloads constructor(
         is BydExtendUiAction.Toggle -> action.target == ToggleTarget.Simple(ToggleId.AutoStart) ||
             action.target == ToggleTarget.Simple(ToggleId.AutomaticUpdate) ||
             action.target == ToggleTarget.Simple(ToggleId.UpdateHintEnabled)
-        is BydExtendUiAction.SetMirrorBorderColor, is BydExtendUiAction.SetProfileBorder -> false
+        is BydExtendUiAction.SetMirrorBorderColor, is BydExtendUiAction.SetProfileBorder,
+        is BydExtendUiAction.SetMusicExclusions -> false
         BydExtendUiAction.RequestMirrorOverlayPermission -> false
         is BydExtendUiAction.SetUpdateHintAppearance -> true
         is BydExtendUiAction.Run -> when (action.command) {
@@ -1404,7 +1406,7 @@ private fun ProductionCameraHost(controller: ProductionUiController, slot: Camer
 }
 
 private fun RootTab.legacyTab() = when (this) {
-    RootTab.Signals, RootTab.Blind, RootTab.Parking, RootTab.Reverse,
+    RootTab.Signals, RootTab.Blind, RootTab.Parking, RootTab.Distance, RootTab.Reverse,
     RootTab.Mirror, RootTab.Settings, RootTab.Debug -> legacyId
 }
 

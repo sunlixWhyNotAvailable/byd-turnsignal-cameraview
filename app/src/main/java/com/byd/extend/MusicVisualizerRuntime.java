@@ -11,6 +11,9 @@ import android.os.PowerManager;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Set;
+import java.util.Collections;
+import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -42,6 +45,9 @@ final class MusicVisualizerRuntime {
     private boolean enabled;
     private boolean captureFocusOnOpen = true;
     private boolean engineVisualizationEnabled;
+    private Set<String> excludedPackages = Collections.emptySet();
+    private List<AudioPlaybackConfiguration> currentPlayback = Collections.emptyList();
+    private boolean exclusionActive;
     private boolean awake;
     private boolean callbackRegistered;
     private boolean mediaActive;
@@ -103,11 +109,15 @@ final class MusicVisualizerRuntime {
 
     void configure(boolean value) {
         runOnHandler(() -> configureOnHandler(
-                value, captureFocusOnOpen, engineVisualizationEnabled));
+                value, captureFocusOnOpen, engineVisualizationEnabled, false, false,
+                Collections.emptySet()));
     }
 
-    void configure(boolean value, boolean captureFocus, boolean engineVisualization) {
-        runOnHandler(() -> configureOnHandler(value, captureFocus, engineVisualization));
+    void configure(boolean value, boolean captureFocus, boolean engineVisualization,
+            boolean showArtwork, boolean showPlayerIcon, Set<String> excluded) {
+        Set<String> snapshot = Collections.unmodifiableSet(new java.util.HashSet<>(excluded));
+        runOnHandler(() -> configureOnHandler(value, captureFocus, engineVisualization,
+                showArtwork, showPlayerIcon, snapshot));
     }
 
     void noteForegroundPackage(String packageName) {
@@ -156,15 +166,17 @@ final class MusicVisualizerRuntime {
     }
 
     private void configureOnHandler(
-            boolean value, boolean captureFocus, boolean engineVisualization) {
+            boolean value, boolean captureFocus, boolean engineVisualization,
+            boolean showArtwork, boolean showPlayerIcon, Set<String> excluded) {
         if (value) refreshAcc("configure");
-        if (value) reconcileAwakeFromSystem("configure");
+        if (value || showArtwork || showPlayerIcon) reconcileAwakeFromSystem("configure");
         boolean changed = enabled != value || captureFocusOnOpen != captureFocus
-                || engineVisualizationEnabled != engineVisualization;
+                || engineVisualizationEnabled != engineVisualization || !excludedPackages.equals(excluded);
         enabled = value;
         captureFocusOnOpen = captureFocus;
         engineVisualizationEnabled = engineVisualization;
-        metadataRuntime.configure(value);
+        excludedPackages = excluded;
+        metadataRuntime.configure(value, showArtwork, showPlayerIcon);
         metadataRuntime.setCaptureFocusOnOpen(captureFocus);
         reportSourceTagCapability("configure");
         if (enabled) {
@@ -212,6 +224,7 @@ final class MusicVisualizerRuntime {
             boolean awakeChanged = reconcileAwakeFromSystem(reason);
             if (awakeChanged && awake) queryPlaybackConfigurations("wake");
             action.run();
+            if (enabled && awake && callbackRegistered) reconcilePlayback(reason);
         });
     }
 
@@ -463,8 +476,25 @@ final class MusicVisualizerRuntime {
             List<AudioPlaybackConfiguration> configurations, String source) {
         // Observation survives sleep; activity must not cancel a required sleep-stop retry.
         if (!shouldProcessPlayback(enabled, awake, callbackRegistered)) return;
+        currentPlayback = configurations == null ? Collections.emptyList() : new ArrayList<>(configurations);
         metadataRuntime.audioPlaybackChanged(source);
-        boolean nextActive = hasMediaPlayback(configurations, engineVisualizationEnabled);
+        reconcilePlayback(source);
+    }
+
+    private void reconcilePlayback(String source) {
+        boolean excluded = MusicSettings.excludesPlaying(metadataRuntime.playingPackages(), excludedPackages);
+        if (excluded != exclusionActive) {
+            exclusionActive = excluded;
+            emit("music_visualization_exclusion", "blocked", excluded,
+                    "playing_packages", metadataRuntime.playingPackages().toString(), "source_event", source);
+        }
+        if (excluded) {
+            cancelDeferredStop(source);
+            setMediaActive(false, source);
+            if (accSession.outputClaimed()) stopOutput("excluded_session");
+            return;
+        }
+        boolean nextActive = hasMediaPlayback(currentPlayback, engineVisualizationEnabled);
         reportSourceTagCapability(source);
         if (nextActive == mediaActive) {
             if (nextActive) startOutput(source);

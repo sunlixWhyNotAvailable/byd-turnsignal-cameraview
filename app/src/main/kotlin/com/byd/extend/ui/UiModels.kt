@@ -11,12 +11,13 @@ enum class UiLanguage { Ukrainian, English, Chinese, Russian }
 enum class UiTheme { Dark, Light }
 /** Stable persisted IDs intentionally differ from enum ordinals after Mirror was inserted. */
 enum class RootTab(val legacyId: Int) {
-    Signals(0), Blind(1), Parking(8), Reverse(5), Mirror(9), Settings(7), Debug(2);
+    Signals(0), Blind(1), Parking(10), Distance(8), Reverse(5), Mirror(9), Settings(7), Debug(2);
 
     companion object {
         fun fromLegacyId(id: Int): RootTab = when (id) {
             1, 4 -> Blind
-            8 -> Parking
+            8 -> Distance
+            10 -> Parking
             5 -> Reverse
             9 -> Mirror
             7 -> Settings
@@ -174,6 +175,8 @@ enum class ToggleId {
     Guard,
     HazardThanks,
     Music,
+    MusicArtwork,
+    MusicPlayerIcon,
     MusicCaptureFocusOnOpen,
     MusicEngineVisualization,
     Weather,
@@ -457,6 +460,9 @@ data class HazardThanksUiState(
 @Immutable
 data class MusicUiState(
     val enabled: Boolean = false,
+    val showArtwork: Boolean = false,
+    val showPlayerIcon: Boolean = false,
+    val excludedApps: Set<String> = emptySet(),
     val captureFocusOnOpen: Boolean = true,
     val engineVisualization: Boolean = false,
     val operation: OperationUiState = OperationUiState(),
@@ -905,6 +911,7 @@ sealed interface BydExtendUiAction {
     @Immutable data class Navigate(val tab: RootTab) : BydExtendUiAction
     @Immutable data class SetLanguage(val language: UiLanguage) : BydExtendUiAction
     @Immutable data class SetTheme(val theme: UiTheme) : BydExtendUiAction
+    @Immutable data class SetMusicExclusions(val packages: Set<String>) : BydExtendUiAction
     @Immutable data class SetMirrorBorderColor(val argb: Int) : BydExtendUiAction
     @Immutable data object RequestMirrorOverlayPermission : BydExtendUiAction
     @Immutable data class SetUpdateHintAppearance(val appearance: UpdateHintAppearance) : BydExtendUiAction

@@ -779,7 +779,10 @@ internal fun MotionArchiveDialog(
             archiveState.selectedDate = null
             archiveState.month = YearMonth.from(chosen)
             if (isStart) archiveState.rangeFrom = chosen else archiveState.rangeTo = chosen
-        }, initial.year, initial.monthValue - 1, initial.dayOfMonth).also { it.show() }
+        }, initial.year, initial.monthValue - 1, initial.dayOfMonth).also {
+            it.show()
+            com.byd.extend.DialogButtonOrder.apply(it)
+        }
     }
     LaunchedEffect(pendingDelete) {
         val chosen = pendingDelete ?: return@LaunchedEffect

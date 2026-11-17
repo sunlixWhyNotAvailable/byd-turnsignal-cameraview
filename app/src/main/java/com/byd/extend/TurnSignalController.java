@@ -2781,6 +2781,9 @@ final class TurnSignalController {
             data.writeInt(enabled ? 1 : 0);
             data.writeInt(captureFocusOnOpen ? 1 : 0);
             data.writeInt(engineVisualizationEnabled ? 1 : 0);
+            data.writeInt(settings.getBoolean(MusicSettings.ARTWORK, false) ? 1 : 0);
+            data.writeInt(settings.getBoolean(MusicSettings.PLAYER_ICON, false) ? 1 : 0);
+            data.writeString(MusicSettings.encode(MusicSettings.excluded(settings)));
             requireTransact(value, TurnSignalShellProtocol.TX_CONFIGURE_MUSIC, data, reply);
         } finally {
             data.recycle();

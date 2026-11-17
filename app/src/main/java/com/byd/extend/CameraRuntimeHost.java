@@ -48,6 +48,12 @@ final class CameraRuntimeHost {
     private final java.util.function.BiConsumer<Integer, Integer> platformSignal;
     private final CameraHelperMain.HelperBinder helper;
     private BlindSpotOverlayController blind;
+    private ParkingCameraController parking;
+    private HandlerThread radarThread;
+    private ParkingRadarRuntime radar;
+    private ParkingRadarState.Snapshot lastRadar;
+    private boolean distanceRadarNeeded;
+    private long radarEpoch;
     private final DistanceWidgetController distance;
     private final Context distanceIdentity;
     private ReverseCameraController reverse;
@@ -118,7 +124,7 @@ final class CameraRuntimeHost {
         distanceThread.start();
         distanceHandler = new Handler(distanceThread.getLooper());
         distance = new DistanceWidgetController(context, distanceIdentity, distanceHandler, this::event,
-                frame -> sendToClient(DISTANCE_FRAME, null, frame));
+                frame -> sendToClient(DISTANCE_FRAME, null, frame), this::distanceRadarDemand);
         helper = new CameraHelperMain.HelperBinder(context, handler, this::acceptCameraLine);
         context.settings.setChangeListener(delta -> handler.post(() -> send(PREFERENCES, null, Bundle.EMPTY)));
     }
@@ -1016,15 +1022,18 @@ final class CameraRuntimeHost {
         BlindSpotOverlayController.migrateOverlayPreferences(context.settings);
         CameraMeshPreparation.warmSettings(context);
         blind = new BlindSpotOverlayController(context, handler, this::event);
+        parking = new ParkingCameraController(context, handler, this::event);
         distance.settingsChanged();
         reverse = new ReverseCameraController(context, handler, helper::emitControllerEvent,
-                active -> blind.setReversePriority(active));
+                active -> { blind.setReversePriority(active); parking.setReversePriority(active); });
         mirror = new RearviewMirrorController(context, handler, this::event);
         discoverCamera();
         blind.setUiHidden(visible);
+        parking.setUiHidden(visible);
         mirror.appVisibility(visible);
         applyVehiclePower();
         blind.attachHelper(helper); reverse.attachHelper(helper);
+        parking.attachHelper(helper);
         mirror.attachHelper(helper);
     }
 
@@ -1050,7 +1059,7 @@ final class CameraRuntimeHost {
         context.uiVisible = next;
         if (visible == next) return;
         visible = next;
-        mirror.appVisibility(next); blind.setUiHidden(next);
+        mirror.appVisibility(next); blind.setUiHidden(next); parking.setUiHidden(next);
         if (!next) preview = false;
         applyVehiclePower();
     }
@@ -1058,8 +1067,46 @@ final class CameraRuntimeHost {
     private void applyVehiclePower() {
         boolean allowed = vehiclePower.ordinaryAllowed();
         blind.setSuspended(preview || !allowed);
+        parking.setSuspended(preview || !allowed);
         reverse.setRuntimeAllowed(allowed);
         mirror.setRuntimeAllowed(allowed);
+        reconcileRadar();
+    }
+
+    private void distanceRadarDemand(boolean needed) {
+        handler.post(() -> {
+            distanceRadarNeeded = needed;
+            reconcileRadar();
+            if (needed && lastRadar != null) distance.radarSnapshot(lastRadar);
+        });
+    }
+
+    private void reconcileRadar() {
+        boolean needed = !lifetime.stopped() && (distanceRadarNeeded
+                || vehiclePower.ordinaryAllowed() && CameraHelperService.anyParkingEnabled(context.settings));
+        if (needed == (radar != null)) return;
+        long epoch = ++radarEpoch;
+        lastRadar = null;
+        if (needed) {
+            if (radarThread == null) {
+                radarThread = new HandlerThread("camera-radar");
+                radarThread.start();
+            }
+            LatestValueDispatcher<ParkingRadarState.Snapshot> packets = new LatestValueDispatcher<>(
+                    handler::post, (snapshot, ignored) -> {
+                        if (lifetime.stopped() || radarEpoch != epoch || radar == null) return;
+                        lastRadar = snapshot;
+                        if (parking != null) parking.acceptRadarSnapshot(snapshot);
+                        if (distanceRadarNeeded) distance.radarSnapshot(snapshot);
+                    });
+            radar = new ParkingRadarRuntime(distanceIdentity, new Handler(radarThread.getLooper()),
+                    this::event, packets::offer);
+            radar.start();
+        } else {
+            radar.stop();
+            radar = null;
+            if (parking != null) parking.clearRadar();
+        }
     }
 
     private void clientDied(IBinder expected) {
@@ -1091,7 +1138,7 @@ final class CameraRuntimeHost {
     private void applySettings(String scope) {
         if ("warning".equals(scope)) blind.applyWarningSettings();
         else if ("trigger".equals(scope)) blind.applyTriggerSettings();
-        else if ("parking".equals(scope)) distance.settingsChanged();
+        else if ("parking".equals(scope)) { parking.settingsChanged(); distance.settingsChanged(); }
         else if ("reverse".equals(scope)) reverse.settingsChanged();
         else if ("reverse_gear".equals(scope)) reverse.gearSwitchingChanged();
         else if ("mirror".equals(scope)) mirror.settingsChanged();
@@ -1099,8 +1146,9 @@ final class CameraRuntimeHost {
         else {
             helper.configureLogging();
             blind.applySettings(); blind.applyWarningSettings(); blind.applyTriggerSettings();
-            distance.settingsChanged(); reverse.settingsChanged(); mirror.settingsChanged();
+            parking.settingsChanged(); distance.settingsChanged(); reverse.settingsChanged(); mirror.settingsChanged();
         }
+        reconcileRadar();
     }
 
     void acceptTelemetry(String line) {
@@ -1343,10 +1391,10 @@ final class CameraRuntimeHost {
 
     private void dispatch(String line, JSONObject event) {
         if (event == null) {
-            blind.acceptEvent(line); reverse.acceptEvent(line);
+            blind.acceptEvent(line); reverse.acceptEvent(line); parking.acceptEvent(line);
             mirror.acceptEvent(line);
         } else {
-            blind.acceptEvent(event); reverse.acceptEvent(event);
+            blind.acceptEvent(event); reverse.acceptEvent(event); parking.acceptEvent(event);
             mirror.acceptEvent(event);
         }
     }
@@ -1526,6 +1574,11 @@ final class CameraRuntimeHost {
             clearMotion();
             unlinkClient();
             handler.removeCallbacks(discoveryRetry);
+            ++radarEpoch;
+            lastRadar = null;
+            if (radar != null) { radar.stop(); radar = null; }
+            if (radarThread != null) { radarThread.quitSafely(); radarThread = null; }
+            if (parking != null) parking.shutdown();
             if (reverse != null) reverse.shutdown();
             if (mirror != null) mirror.shutdown();
             if (blind != null) blind.shutdown();

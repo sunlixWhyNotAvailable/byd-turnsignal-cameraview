@@ -34,9 +34,11 @@ final class MusicArtworkImages {
         this.context = context; this.errors = errors;
     }
 
-    Bitmap image(String packageName, MediaMetadata metadata, int sessionUid) {
-        Bitmap cover = artwork(packageName, metadata, sessionUid);
+    Bitmap image(String packageName, MediaMetadata metadata, int sessionUid,
+            boolean showArtwork, boolean showPlayerIcon) {
+        Bitmap cover = showArtwork ? artwork(packageName, metadata, sessionUid) : null;
         iconFallback = cover == null;
+        if (!showPlayerIcon) return cover;
         try {
             if (!fontsReady) { CameraShellMain.initializeSystemFontsForShell(); fontsReady = true; }
             if (!packageName.equals(iconPackage) || iconUid != sessionUid) {

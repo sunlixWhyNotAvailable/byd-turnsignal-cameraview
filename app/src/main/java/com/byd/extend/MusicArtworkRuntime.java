@@ -32,6 +32,7 @@ final class MusicArtworkRuntime {
     private final Map<String, String> failures = new HashMap<>();
     private volatile Selection selected;
     private boolean running, failed;
+    private boolean showArtwork, showPlayerIcon;
     private long revision;
     private volatile Thread launcher;
 
@@ -40,6 +41,13 @@ final class MusicArtworkRuntime {
     }
 
     synchronized void reset() { failed = false; failures.clear(); }
+
+    synchronized void configure(boolean artwork, boolean playerIcon) {
+        if (showArtwork == artwork && showPlayerIcon == playerIcon) return;
+        showArtwork = artwork;
+        showPlayerIcon = playerIcon;
+        if (selected != null) update(selected.controller, selected.metadata);
+    }
 
     synchronized void metadataChanged(MediaController controller, MediaMetadata metadata) {
         if (selected != null && selected.controller == controller) update(controller, metadata);
@@ -50,8 +58,10 @@ final class MusicArtworkRuntime {
     }
 
     synchronized void update(MediaController controller, MediaMetadata metadata) {
-        if (selected == null ? controller != null : selected.controller != controller || selected.metadata != metadata) {
-            selected = controller == null ? null : new Selection(controller, metadata);
+        if (!showArtwork && !showPlayerIcon) controller = null;
+        if (selected == null ? controller != null : selected.controller != controller || selected.metadata != metadata
+                || selected.artwork != showArtwork || selected.playerIcon != showPlayerIcon) {
+            selected = controller == null ? null : new Selection(controller, metadata, showArtwork, showPlayerIcon);
             revision++;
         }
         if (controller == null || running || failed) return;
@@ -189,6 +199,7 @@ final class MusicArtworkRuntime {
         Bitmap previousImage;
         String path, track, lastDisplayed, packageName = "";
         boolean iconFallback;
+        boolean previousArtwork, previousPlayerIcon;
         Images(Context shell, File directory) {
             this.shell = shell; this.directory = directory;
             loader = new MusicArtworkImages(shell, MusicArtworkRuntime.this::error);
@@ -208,11 +219,13 @@ final class MusicArtworkRuntime {
             MediaMetadata metadata = selection.metadata;
             String nextTrack = MusicArtworkPolicy.trackKey(controller.getPackageName() + ":" + controller.getSessionToken(),
                     text(metadata, MediaMetadata.METADATA_KEY_MEDIA_ID), text(metadata, MediaMetadata.METADATA_KEY_TITLE), text(metadata, MediaMetadata.METADATA_KEY_ARTIST));
-            if (controller != previousController || metadata != previousMetadata || !nextTrack.equals(track)) {
+            if (controller != previousController || metadata != previousMetadata || !nextTrack.equals(track)
+                    || previousArtwork != selection.artwork || previousPlayerIcon != selection.playerIcon) {
                 int sessionUid = -1;
                 try { sessionUid = (Integer) controller.getSessionToken().getClass().getMethod("getUid").invoke(controller.getSessionToken()); }
                 catch (Throwable failure) { error("session_uid", failure); }
-                Bitmap bitmap = loader.image(controller.getPackageName(), metadata, sessionUid);
+                Bitmap bitmap = loader.image(controller.getPackageName(), metadata, sessionUid,
+                        selection.artwork, selection.playerIcon);
                 if (bitmap == null) path = null;
                 else if (path == null || previousImage == null || !bitmap.sameAs(previousImage)) {
                     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -224,6 +237,7 @@ final class MusicArtworkRuntime {
                     path = image.getPath(); previousImage = bitmap;
                 }
                 previousController = controller; previousMetadata = metadata; track = nextTrack;
+                previousArtwork = selection.artwork; previousPlayerIcon = selection.playerIcon;
                 packageName = controller.getPackageName();
                 iconFallback = loader.iconFallback;
             }
@@ -239,7 +253,11 @@ final class MusicArtworkRuntime {
     private static final class Selection {
         final MediaController controller;
         final MediaMetadata metadata;
-        Selection(MediaController controller, MediaMetadata metadata) { this.controller = controller; this.metadata = metadata; }
+        final boolean artwork, playerIcon;
+        Selection(MediaController controller, MediaMetadata metadata, boolean artwork, boolean playerIcon) {
+            this.controller = controller; this.metadata = metadata;
+            this.artwork = artwork; this.playerIcon = playerIcon;
+        }
     }
 
     private static String text(MediaMetadata metadata, String key) { return metadata == null ? null : metadata.getString(key); }

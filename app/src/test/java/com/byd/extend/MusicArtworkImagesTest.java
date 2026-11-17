@@ -14,6 +14,17 @@ import static org.junit.Assert.*;
 @Config(sdk = 35, application = Application.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class MusicArtworkImagesTest {
+    @Test public void disabledOutputsDoNotReadImagesAndArtworkOnlyDoesNotLookUpPlayerIcon() {
+        Bitmap cover = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
+        android.media.MediaMetadata metadata = new android.media.MediaMetadata.Builder()
+                .putBitmap(android.media.MediaMetadata.METADATA_KEY_ART, cover).build();
+        MusicArtworkImages images = new MusicArtworkImages(org.robolectric.RuntimeEnvironment.getApplication(),
+                (operation, error) -> fail(operation + ": " + error));
+        assertSame(cover, images.image("nonexistent.player", metadata, -1, true, false));
+        assertNull(images.image("nonexistent.player", new android.media.MediaMetadata.Builder()
+                .putString(android.media.MediaMetadata.METADATA_KEY_ART_URI, "file:///private/cover.png")
+                .build(), -1, false, false));
+    }
     @Test public void EmbeddedBitmapDoesNotRequirePrivilegedUriAccess() {
         Bitmap cover = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
         android.media.MediaMetadata metadata = new android.media.MediaMetadata.Builder()

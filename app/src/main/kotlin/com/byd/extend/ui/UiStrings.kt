@@ -29,7 +29,7 @@ internal class UiStrings @JvmOverloads constructor(
 
     val ukrainian: Boolean get() = language == UiLanguage.Ukrainian
     val chinese: Boolean get() = language == UiLanguage.Chinese
-    fun resource(id: Int): String = resources?.getString(id) ?: ""
+    fun resource(id: Int, vararg arguments: Any): String = resources?.getString(id, *arguments) ?: ""
     fun text(ukrainianText: String, englishText: String): String =
         packaged(ukrainianText, englishText) ?: if (ukrainian) ukrainianText else englishText
     fun text(ukrainianText: String, englishText: String, chineseText: String): String =
@@ -125,6 +125,7 @@ internal class UiStrings @JvmOverloads constructor(
     val tabs get() = listOf(
         text("Інтеграції BYD", "BYD integrations", "BYD 集成"),
         text("Камери сліпих зон", "Blind-zone cameras", "盲区摄像头"),
+        text("Камери паркування", "Parking cameras", "泊车摄像头"),
         resource(R.string.distance_widget_title),
         text("Камери заднього ходу", "Reverse cameras", "倒车摄像头"),
         text("Дзеркало заднього виду", "Rearview mirror", "后视镜"),

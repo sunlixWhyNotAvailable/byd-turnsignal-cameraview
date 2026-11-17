@@ -316,4 +316,13 @@
     <string name="cameras_initial_composition">"Full composition"</string>
     <string name="cameras_initial_exterior">"Exterior"</string>
     <string name="cameras_initial_interior">"Interior"</string>
+    <string name="music_show_artwork">"Show track artwork"</string>
+    <string name="music_show_player_icon">"Show player icon"</string>
+    <string name="music_exclude_visualization">"Exclude from visualization"</string>
+    <string name="music_excluded_count">"Selected: %1$d"</string>
+    <string name="music_clear_exclusions">"Clear all"</string>
+    <string name="music_apps_search">"Search apps"</string>
+    <string name="music_apps_loading">"Loading apps…"</string>
+    <string name="music_apps_error">"Could not load the app list"</string>
+    <string name="music_apps_empty">"No apps found"</string>
 </resources>

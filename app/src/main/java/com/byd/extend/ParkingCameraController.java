@@ -77,6 +77,20 @@ final class ParkingCameraController {
         evaluate();
     }
 
+    void acceptRadarSnapshot(ParkingRadarState.Snapshot snapshot) {
+        if (shutdown) return;
+        int[] values = snapshot.raw();
+        boolean[] valid = snapshot.valid();
+        System.arraycopy(values, 0, radarRaw, 0, radarRaw.length);
+        System.arraycopy(valid, 0, radarValid, 0, radarValid.length);
+        evaluate();
+    }
+
+    void clearRadar() {
+        Arrays.fill(radarValid, false);
+        evaluate();
+    }
+
     void setSuspended(boolean value) {
         suspended = value;
         if (value) {
@@ -199,15 +213,6 @@ final class ParkingCameraController {
                     && attachedGroupRequestId > 0
                     && event.optInt("request_id", -1) == attachedGroupRequestId) {
                 resetAfterAttachFailure();
-            } else if (isRadarHelperLossEvent(kind)) {
-                resetRadarSession(true);
-                evaluate();
-            } else if (isRadarHelperReadyEvent(kind)) {
-                resetRadarSession(false);
-                radarHelperEpochMs = now;
-                evaluate();
-                handler.removeCallbacks(retry);
-                handler.postDelayed(retry, RETRY_MS);
             } else if ("helper_connected".equals(kind)) {
                 handler.removeCallbacks(retry);
                 handler.postDelayed(retry, RETRY_MS);

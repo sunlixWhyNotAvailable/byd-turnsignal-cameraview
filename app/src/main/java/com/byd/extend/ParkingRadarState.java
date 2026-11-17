@@ -81,6 +81,12 @@ final class ParkingRadarState {
             this.generations = generations.clone(); this.healthy = healthy.clone(); this.status = status.clone();
         }
         int[] raw() { return raw.clone(); }
+        boolean[] valid() {
+            boolean[] result = new boolean[FIDS.length];
+            for (int i = 0; i < result.length; i++) result[i] = healthy[family(FIDS[i])]
+                    && present[i] && ParkingCameraProfile.isValidRadarRaw(FIDS[i], raw[i]);
+            return result;
+        }
         boolean[] present() { return present.clone(); }
         long[] received() { return received.clone(); }
         long generation(int family) { return generations[family]; }

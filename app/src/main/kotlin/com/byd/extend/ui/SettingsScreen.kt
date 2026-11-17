@@ -54,7 +54,7 @@ internal fun SettingsScreen(
     val focus = LocalFocusManager.current
     var editUpdateHint by remember { mutableStateOf(false) }
     ScreenSurface(colors, scroll = false) {
-        PageTitle(strings.tabs[5], strings.text("Дозволи, параметри виводу камер та логи",
+        PageTitle(strings.tabs[6], strings.text("Дозволи, параметри виводу камер та логи",
             "Permissions, camera output settings, and logs"), colors)
         Row(Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(Modifier.width(260.dp).fillMaxHeight().clip(RoundedCornerShape(12.dp))

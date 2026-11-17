@@ -18,6 +18,32 @@ import static org.junit.Assert.assertThrows;
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = 33)
 public final class CameraModeSettingsPreferencesTest {
+    @Test public void restoringParkingKeepsSavedRulesCropsAndCalibrationPresets() {
+        SharedPreferences settings = RuntimeEnvironment.getApplication()
+                .getSharedPreferences("parking-restore", Context.MODE_PRIVATE);
+        ParkingCameraSettings parking = new ParkingCameraSettings(settings);
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            parking.setRule(profile, new ParkingCameraSettings.Rule(true, 35 + profile.id, profile.corner()));
+            DirectCameraCrop crop = DirectCameraCrop.defaultFor(profile)
+                    .withIndependentGeometry(.1f, .2f, .5f, .4f);
+            SharedPreferences.Editor editor = settings.edit();
+            DirectCameraCrop.write(editor, profile, crop);
+            editor.commit();
+            CameraCalibrationPreset.saveParking(settings, profile);
+        }
+        ParkingCameraSettings restored = new ParkingCameraSettings(settings);
+        for (ParkingCameraProfile profile : ParkingCameraProfile.values()) {
+            assertTrue(restored.rule(profile).enabled);
+            assertEquals(35 + profile.id, restored.rule(profile).distanceCm);
+            assertEquals(.1f, DirectCameraCrop.load(settings, profile).left, .0001f);
+            SharedPreferences.Editor editor = settings.edit();
+            DirectCameraCrop.write(editor, profile, DirectCameraCrop.defaultFor(profile));
+            editor.commit();
+            assertTrue(CameraCalibrationPreset.loadParking(settings, profile));
+            assertEquals(.1f, DirectCameraCrop.load(settings, profile).left, .0001f);
+            assertEquals(.2f, DirectCameraCrop.load(settings, profile).top, .0001f);
+        }
+    }
     @Test public void viewerChoicesPersistWithoutChangingCameraModes() throws Exception {
         Context context = RuntimeEnvironment.getApplication();
         SharedPreferences settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);

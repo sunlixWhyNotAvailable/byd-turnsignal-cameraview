@@ -2156,7 +2156,8 @@ public final class CameraHelperService extends Service {
     }
 
     static boolean anyParkingEnabled(SharedPreferences preferences) {
-        // Legacy parking presets must never restart the retired camera workflow.
+        for (ParkingCameraSettings.Rule rule : ParkingCameraSettings.readRules(preferences))
+            if (rule.enabled) return true;
         return false;
     }
 

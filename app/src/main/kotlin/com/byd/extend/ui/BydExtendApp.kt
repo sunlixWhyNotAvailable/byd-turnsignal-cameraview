@@ -111,6 +111,7 @@ import kotlinx.coroutines.flow.first
 
 private val rootIcons: List<ImageVector> = listOf(
     Icons.Outlined.Extension, Icons.Outlined.Visibility, Icons.Outlined.LocalParking,
+    Icons.Outlined.DirectionsCar,
     Icons.Outlined.Videocam, Icons.Outlined.DirectionsCar, Icons.Outlined.Settings,
     Icons.Outlined.BugReport,
 )
@@ -213,7 +214,8 @@ fun BydExtendApp(
                             state.signals, state.avas, state.adbRecovery, strings, colors, dispatchAction,
                             sidebarScroll, cameraHost, motionArchiveState, uiSession)
                         RootTab.Blind -> BlindScreen(state.blind, strings, colors, dispatchAction, cameraHost, onPreview)
-                        RootTab.Parking -> com.byd.extend.ui.distance.DistanceWidgetScreen(colors, strings, dispatchAction)
+                        RootTab.Parking -> ParkingScreen(state.parking, strings, colors, dispatchAction, cameraHost, onPreview)
+                        RootTab.Distance -> com.byd.extend.ui.distance.DistanceWidgetScreen(colors, strings, dispatchAction)
                         RootTab.Reverse -> ReverseScreen(state.reverse, strings, colors, dispatchAction, cameraHost, onPreview)
                         RootTab.Mirror -> MirrorScreen(state.mirror, strings, colors, dispatchAction, cameraHost, onPreview)
                         RootTab.Settings -> SettingsScreen(state.settings, state.legacyRuntimeBlocked,
@@ -291,7 +293,8 @@ private fun rememberSessionScrollRestore(
 internal fun BydExtendUiState.scrollKey(): String = when (activeTab) {
     RootTab.Signals -> "signals:${signals.category}"
     RootTab.Blind -> "blind:${blind.selectedGroup}:${blind.selectedSide}:${blind.section}"
-    RootTab.Parking -> "distance-widget"
+    RootTab.Distance -> "distance-widget"
+    RootTab.Parking -> "parking:${parking.selectedView}:${parking.section}"
     RootTab.Reverse -> "reverse:${reverse.selectedElement}:${reverse.selectedSource}:${reverse.section}"
     RootTab.Mirror -> "mirror:${mirror.target}:${mirror.activeFront}:${mirror.section}"
     RootTab.Settings -> "settings:${settings.category}"
@@ -305,7 +308,7 @@ internal fun BydExtendUiState.sidebarScrollKey(): String = when (activeTab) {
 }
 
 internal fun BydExtendUiState.usesLazyMainViewport(): Boolean = when (activeTab) {
-    RootTab.Blind, RootTab.Parking, RootTab.Reverse, RootTab.Mirror, RootTab.Settings -> true
+    RootTab.Blind, RootTab.Parking, RootTab.Distance, RootTab.Reverse, RootTab.Mirror, RootTab.Settings -> true
     RootTab.Signals -> signals.category == SignalsCategory.Avas ||
         signals.category == SignalsCategory.AdbRecovery || signals.category == SignalsCategory.Calls
     RootTab.Debug -> false
@@ -477,6 +480,13 @@ private fun SignalsScreen(
                         state.music.enabled,
                         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.Music), it)) }, colors,
                         pending = state.music.operation.pending, enabled = state.music.operation.enabled)
+                    SwitchLine(strings.resource(R.string.music_show_artwork), "", state.music.showArtwork,
+                        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MusicArtwork), it)) }, colors)
+                    SwitchLine(strings.resource(R.string.music_show_player_icon), "", state.music.showPlayerIcon,
+                        { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MusicPlayerIcon), it)) }, colors)
+                    MusicExclusionsRow(state.music.excludedApps, colors, strings) {
+                        onAction(BydExtendUiAction.SetMusicExclusions(it))
+                    }
                     SwitchLine(
                         strings.text("Захоплювати аудіофокус при відкритті плеєра",
                             "Capture audio focus when opening a player", "打开播放器时获取音频焦点"),

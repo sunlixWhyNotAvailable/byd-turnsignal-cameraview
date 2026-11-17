@@ -424,8 +424,9 @@ private fun RootTab.pageIndex(): Int = when (this) {
     RootTab.Signals -> 0
     RootTab.Blind -> 1
     RootTab.Parking -> 2
-    RootTab.Reverse -> 3
-    RootTab.Mirror -> 4
-    RootTab.Settings -> 5
-    RootTab.Debug -> 6
+    RootTab.Distance -> 3
+    RootTab.Reverse -> 4
+    RootTab.Mirror -> 5
+    RootTab.Settings -> 6
+    RootTab.Debug -> 7
 }

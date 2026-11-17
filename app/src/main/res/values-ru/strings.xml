@@ -225,8 +225,8 @@
     <string name="index_3_right">"Индекс 3 • правая"</string>
     <string name="index_4_front">"Индекс 4 • передняя"</string>
     <string name="slider_label">"%1$s • ползунок"</string>
-    <string name="rearview_mirror">"Зеркало заднего вида"</string>
-    <string name="enable_rearview_mirror">"Включить зеркало заднего вида"</string>
+    <string name="rearview_mirror">"Заднее зеркало"</string>
+    <string name="enable_rearview_mirror">"Включить заднее зеркало"</string>
     <string name="mirror_gestures">"Перетащите для перемещения. Удерживайте 1 секунду, чтобы скрыть до следующего открытия приложения. Нажатия не проходят сквозь камеру."</string>
     <string name="mirror_permission">"Разрешить показ поверх других приложений"</string>
     <string name="mirror_cluster_unavailable">"Дополнительный дисплей недоступен. Расположение на приборке показано только здесь; виджет не будет перенесён на планшет."</string>
@@ -316,4 +316,13 @@
     <string name="cameras_initial_composition">"Полная композиция"</string>
     <string name="cameras_initial_exterior">"Внешние"</string>
     <string name="cameras_initial_interior">"Внутренние"</string>
+    <string name="music_show_artwork">"Показывать обложку композиции"</string>
+    <string name="music_show_player_icon">"Показывать значок плеера"</string>
+    <string name="music_exclude_visualization">"Исключить из визуализации"</string>
+    <string name="music_excluded_count">"Выбрано: %1$d"</string>
+    <string name="music_clear_exclusions">"Сбросить всё"</string>
+    <string name="music_apps_search">"Поиск приложений"</string>
+    <string name="music_apps_loading">"Загрузка приложений…"</string>
+    <string name="music_apps_error">"Не удалось загрузить список приложений"</string>
+    <string name="music_apps_empty">"Приложения не найдены"</string>
 </resources>

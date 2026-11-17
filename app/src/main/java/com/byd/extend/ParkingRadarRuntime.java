@@ -12,7 +12,7 @@ import java.lang.reflect.Proxy;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-/** Read-only OEM reader, owned by Distance; never enables the retired parking-camera integration. */
+/** Shared read-only OEM reader for Distance and parking cameras, owned by CameraRuntimeHost. */
 public final class ParkingRadarRuntime {
     public static final String DEVICE_CLASS = "android.hardware.bydauto.radar.BYDAutoRadarDevice";
     public static final String ADAS_DEVICE_CLASS = "android.hardware.bydauto.adas.BYDAutoADASDevice";

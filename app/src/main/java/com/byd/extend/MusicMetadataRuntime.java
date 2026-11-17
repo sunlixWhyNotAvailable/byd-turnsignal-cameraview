@@ -107,6 +107,8 @@ final class MusicMetadataRuntime {
     private Method currentFocusPackage;
     private BydMediaWriter writer;
     private boolean enabled;
+    private boolean showArtwork;
+    private boolean showPlayerIcon;
     private boolean captureFocusOnOpen = true;
     private boolean awake;
     private boolean observersStarted;
@@ -166,16 +168,45 @@ final class MusicMetadataRuntime {
         this.activityManager = activityManager;
     }
 
-    void configure(boolean value) {
+    void configure(boolean value, boolean artworkEnabled, boolean iconEnabled) {
         runOnHandler(() -> {
             if (terminalStop) return;
+            boolean disableMetadata = enabled && !value;
             enabled = value;
-            if (value) artwork.reset();
-            if (enabled) startObservers("configure");
-            else if (!enabled) stopObservers("disabled", awake);
+            showArtwork = artworkEnabled;
+            showPlayerIcon = iconEnabled;
+            artwork.configure(artworkEnabled, iconEnabled);
+            if (disableMetadata) {
+                cancelReceiverFallback("metadata_disabled");
+                releaseAllMediaKeys("metadata_disabled");
+                mediaSelection.clear();
+                lifecycleGeneration++;
+                cancelProgressRefresh();
+                queuedWrite = null;
+                if (awake) cleanupOwnedCard("metadata_disabled");
+            }
+            if (outputsEnabled()) {
+                artwork.reset();
+                startObservers("configure");
+                schedulePublish("configure", true);
+            } else stopObservers("disabled", awake);
             emit("music_metadata_config", "enabled", enabled, "awake", awake,
+                    "artwork", showArtwork, "player_icon", showPlayerIcon,
                     "observer_active", observersStarted, "error", error);
         });
+    }
+
+    private boolean outputsEnabled() { return enabled || showArtwork || showPlayerIcon; }
+
+    Set<String> playingPackages() {
+        Set<String> result = new HashSet<>();
+        if (!observersStarted || !awake) return result;
+        for (SessionBinding session : sessions.values()) {
+            if (!session.destroyed && session.playbackState != null
+                    && session.playbackState.getState() == PlaybackState.STATE_PLAYING)
+                result.add(session.packageName);
+        }
+        return result;
     }
 
     void setCaptureFocusOnOpen(boolean value) {
@@ -650,7 +681,7 @@ final class MusicMetadataRuntime {
             emit("music_metadata_awake", "source_event", reason,
                     "old_awake", previous, "awake", awake,
                     "observer_active", observersStarted);
-            if (awake && enabled) refreshSessions("wake");
+            if (awake && outputsEnabled()) refreshSessions("wake");
             else if (!awake) pausePublishing();
         });
     }
@@ -660,7 +691,7 @@ final class MusicMetadataRuntime {
     }
 
     private boolean refreshSessionsOnHandler(String reason) {
-        if (!enabled || !awake || !observersStarted || sessionManager == null) return false;
+        if (!outputsEnabled() || !awake || !observersStarted || sessionManager == null) return false;
         try {
             List<MediaController> active = sessionManager.getActiveSessions(null);
             if (active == null) throw new IllegalStateException("Active sessions unavailable");
@@ -710,7 +741,7 @@ final class MusicMetadataRuntime {
     }
 
     private void startObservers(String reason) {
-        if (!shouldRegisterSessionObservers(enabled, terminalStop, observersStarted)) {
+        if (!shouldRegisterSessionObservers(outputsEnabled(), terminalStop, observersStarted)) {
             if (observersStarted && awake) refreshSessions(reason + "_retry");
             return;
         }
@@ -826,7 +857,7 @@ final class MusicMetadataRuntime {
     }
 
     private void schedulePublish(String reason, boolean force) {
-        if (!enabled || !awake || !observersStarted) return;
+        if (!outputsEnabled() || !awake || !observersStarted) return;
         forcePending = coalesceForce(forcePending, force);
         String nextReason = reason == null ? "unknown" : reason;
         if ("sessions_callback".equals(nextReason)
@@ -839,7 +870,7 @@ final class MusicMetadataRuntime {
     }
 
     private void publishSelectedSession() {
-        if (!publishPending || !enabled || !awake || !observersStarted) return;
+        if (!publishPending || !outputsEnabled() || !awake || !observersStarted) return;
         publishPending = false;
         boolean force = forcePending;
         forcePending = false;
@@ -871,6 +902,7 @@ final class MusicMetadataRuntime {
         SessionBinding selected = selectSession(sessions.values(), selectionPackage);
         artwork.update(selected == null ? null : selected.controller,
                 selected == null ? null : selected.metadata);
+        if (!enabled) return;
         if (selected == null) {
             cancelProgressRefresh();
             selectedToken = null;
@@ -1421,7 +1453,9 @@ final class MusicMetadataRuntime {
             try {
                 metadata = controller.getMetadata();
                 playbackState = controller.getPlaybackState();
-            } catch (Throwable ignored) {
+            } catch (Throwable failure) {
+                emit("music_session_read_error", "package", packageName,
+                        "diagnostic", com.byd.extend.remote.CameraViewingDiagnostics.describe(failure));
             }
         }
 
