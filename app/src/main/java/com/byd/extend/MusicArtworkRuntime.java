@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
+import android.media.session.MediaSessionManager;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.SystemClock;
@@ -13,12 +14,14 @@ import android.util.Base64;
 import com.byd.extend.artwork.MusicArtworkPolicy;
 import com.byd.extend.artwork.MusicArtworkWorker;
 import com.byd.extend.artwork.ArtworkFiles;
+import com.byd.extend.artwork.ArtworkDirectPolicy;
 import org.json.JSONObject;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -33,7 +36,8 @@ final class MusicArtworkRuntime {
     private volatile Selection selected;
     private boolean running, failed;
     private boolean showArtwork, showPlayerIcon;
-    private long revision;
+    private volatile long revision, sessionEpoch;
+    private long fallbackEpoch = -1;
     private volatile Thread launcher;
 
     MusicArtworkRuntime(Context context, BiConsumer<String, Object[]> events) {
@@ -61,24 +65,39 @@ final class MusicArtworkRuntime {
         if (!showArtwork && !showPlayerIcon) controller = null;
         if (selected == null ? controller != null : selected.controller != controller || selected.metadata != metadata
                 || selected.artwork != showArtwork || selected.playerIcon != showPlayerIcon) {
+            if (selected == null && controller != null) failed = false;
+            if (controller == null) sessionEpoch++;
             selected = controller == null ? null : new Selection(controller, metadata, showArtwork, showPlayerIcon);
             revision++;
+            notifyAll();
         }
         if (controller == null || running || failed) return;
         running = true;
-        long startRevision = revision;
-        Thread broker = new Thread(() -> run(startRevision), "byd-music-artwork");
+        long startRevision = revision, epoch = sessionEpoch;
+        Thread broker = new Thread(() -> run(startRevision, epoch), "byd-music-artwork");
         broker.setDaemon(true); broker.start();
     }
 
-    private void run(long startRevision) {
+    private void run(long startRevision, long epoch) {
         try {
             if (android.os.Process.myUid() != 2000) throw new SecurityException("Artwork broker requires shell UID2000");
             if (launcher != null && launcher.isAlive()) throw new IOException("Previous cellsservice_host launch is still pending");
-            relay();
+            try {
+                if (fallbackEpoch == epoch) relay(epoch);
+                else direct(epoch);
+            }
+            catch (MusicArtworkDirect.Failure failure) {
+                error("direct_transport", failure);
+                if (selected != null && sessionEpoch == epoch) {
+                    fallbackEpoch = epoch;
+                    events.accept("music_artwork_fallback", new Object[]{"from", "shell", "to", "cellsservice_host",
+                            "reason", failure.getMessage(), "session", epoch});
+                    relay(epoch);
+                }
+            }
         } catch (Throwable failure) {
             error("artwork_session", failure);
-            synchronized (this) { failed = true; }
+            synchronized (this) { if (sessionEpoch == epoch) failed = true; }
         } finally {
             synchronized (this) {
                 running = false;
@@ -88,14 +107,130 @@ final class MusicArtworkRuntime {
         }
     }
 
-    private void relay() throws Exception {
+    private static int currentUser() throws Exception {
+        return (Integer) Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);
+    }
+
+    private synchronized void awaitChange(long observedRevision, long epoch, long delay) throws InterruptedException {
+        if (revision == observedRevision && sessionEpoch == epoch && selected != null && delay > 0) wait(delay);
+    }
+
+    private void direct(long epoch) throws Exception {
         Context shell = TurnSignalShellMain.shellContext(context);
-        int user = (Integer) Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);
+        int user = currentUser();
+        String prefix = MusicArtworkWorker.imagePrefix(user, UUID.randomUUID().toString().replace("-", ""));
+        MusicArtworkDirect transport = new MusicArtworkDirect(user, prefix);
+        Images images = new Images(shell, new File(prefix), user, epoch);
+        events.accept("music_artwork_started", new Object[]{"transport", "shell", "broker_uid", android.os.Process.myUid(),
+                "user", user, "vm", transport.vm, "single_os", transport.singleOs, "host_root", transport.hostRoot});
+        String sentTrack = null, sentPath = null, previousPath = null, attempted = null, restored = null;
+        long lastSend = 0, sends = 0;
+        boolean touched = false, handoff = false;
+        String restoration = "not_required";
+        try {
+            while (sessionEpoch == epoch && selected != null) {
+                long sampledRevision = revision;
+                JSONObject state = images.state();
+                if (!state.optBoolean("active")) break;
+                if (!state.has("track") || revision != sampledRevision) continue;
+                String track = state.getString("track"), path = state.isNull("cover") ? null : state.getString("cover");
+                boolean changed = !Objects.equals(track, sentTrack) || !Objects.equals(path, sentPath);
+                long delay = ArtworkDirectPolicy.delay(SystemClock.elapsedRealtime(), lastSend, changed, path != null);
+                if ((path != null || touched && changed) && delay == 0) {
+                    if (currentUser() != user) {
+                        synchronized (this) { if (sessionEpoch == epoch) update(null, null); }
+                        break;
+                    }
+                    if (!ArtworkDirectPolicy.current(epoch, sessionEpoch, sampledRevision, revision,
+                            images.preparedSelection, selected)) continue;
+                    attempted = path;
+                    touched = true; // An exception cannot prove native did not receive the path.
+                    long begin = SystemClock.elapsedRealtime();
+                    transport.send(path);
+                    lastSend = SystemClock.elapsedRealtime(); sends++;
+                    if (!Objects.equals(sentPath, path)) previousPath = sentPath;
+                    sentPath = path; sentTrack = track;
+                    if (DiagnosticLogPolicy.shouldProduce("music_artwork_direct_send"))
+                        events.accept("music_artwork_direct_send", new Object[]{"reason", changed ? "image_changed" : "repeat",
+                                "duration_ms", lastSend - begin, "command_accepted", true, "visual_confirmed", false});
+                    if (changed) try { ArtworkFiles.pruneImages(images.directory, false, path, previousPath); }
+                    catch (Throwable secondary) { error("direct_image_cleanup_secondary", secondary); }
+                }
+                awaitChange(sampledRevision, epoch,
+                        ArtworkDirectPolicy.delay(SystemClock.elapsedRealtime(), lastSend, false, path != null));
+            }
+        } catch (MusicArtworkDirect.Failure failure) {
+            handoff = true;
+            throw failure;
+        } finally {
+            if (touched && !handoff) {
+                try {
+                    if (currentUser() == user) {
+                        Selection restore = currentArtworkSelection(shell);
+                        String restoreTrack = selectionTrack(restore);
+                        Bitmap clean = restore == null ? null : images.loader.artwork(restore.controller.getPackageName(),
+                                restore.metadata, sessionUid(restore.controller));
+                        restored = clean == null ? null : images.save(clean);
+                        Selection checked = currentArtworkSelection(shell);
+                        if (currentUser() != user || !Objects.equals(restoreTrack, selectionTrack(checked)))
+                            throw new IOException("Current player/track/user changed during direct artwork restoration");
+                        attempted = restored;
+                        transport.send(restored);
+                        restoration = "command_accepted_visual_unverified";
+                        events.accept("music_artwork_restore", new Object[]{"transport", "shell", "kind",
+                                restored == null ? "default" : "current_track_clean", "command_accepted", true,
+                                "visual_confirmed", false});
+                    } else restoration = "user_changed_files_retained";
+                } catch (Throwable secondary) {
+                    restoration = "pending";
+                    error("direct_restore_secondary", secondary);
+                }
+            } else if (touched) restoration = "handoff_files_retained";
+            // shortcut: native exposes no displayed-path getter; retain final/previous PNGs until a verified release is available.
+            try { ArtworkFiles.pruneImages(images.directory, !touched, sentPath, previousPath, attempted, restored); }
+            catch (Throwable secondary) { error("direct_image_cleanup_secondary", secondary); }
+            if (DiagnosticLogPolicy.shouldProduce("music_artwork_direct_send"))
+                events.accept("music_artwork_direct_send", new Object[]{"reason", "session_totals", "sends", sends});
+            events.accept("music_artwork_stopped", new Object[]{"transport", "shell",
+                    "restoration", restoration, "retention_required", touched});
+        }
+    }
+
+    private static int sessionUid(MediaController controller) throws Exception {
+        return (Integer) controller.getSessionToken().getClass().getMethod("getUid").invoke(controller.getSessionToken());
+    }
+
+    private static String selectionTrack(Selection selection) {
+        if (selection == null) return null;
+        return MusicArtworkPolicy.trackKey(selection.controller.getPackageName() + ":" + selection.controller.getSessionToken(),
+                text(selection.metadata, MediaMetadata.METADATA_KEY_MEDIA_ID), text(selection.metadata, MediaMetadata.METADATA_KEY_TITLE),
+                text(selection.metadata, MediaMetadata.METADATA_KEY_ARTIST));
+    }
+
+    private static Selection currentArtworkSelection(Context shell) throws Exception {
+        AudioManager audio = (AudioManager) shell.getSystemService(Context.AUDIO_SERVICE);
+        String focus = (String) audio.getClass().getMethod("getCurrentAudioFocusPackage").invoke(audio);
+        MediaSessionManager manager = (MediaSessionManager) shell.getSystemService(Context.MEDIA_SESSION_SERVICE);
+        List<MediaController> matches = new ArrayList<>(), playing = new ArrayList<>();
+        for (MediaController controller : manager.getActiveSessions(null)) {
+            if (!controller.getPackageName().equals(focus)) continue;
+            matches.add(controller);
+            if (controller.getPlaybackState() != null && controller.getPlaybackState().getState()
+                    == android.media.session.PlaybackState.STATE_PLAYING) playing.add(controller);
+        }
+        if (playing.size() == 1) matches = playing;
+        if (matches.size() > 1) throw new IOException("Ambiguous current MediaSession during artwork restoration");
+        return matches.isEmpty() ? null : new Selection(matches.get(0), matches.get(0).getMetadata(), true, false);
+    }
+
+    private void relay(long epoch) throws Exception {
+        Context shell = TurnSignalShellMain.shellContext(context);
+        int user = currentUser();
         String token = UUID.randomUUID().toString().replace("-", "");
         String imageId = UUID.randomUUID().toString().replace("-", "");
         String prefix = MusicArtworkWorker.imagePrefix(user, imageId);
         File directory = new File(prefix);
-        Images images = new Images(shell, directory);
+        Images images = new Images(shell, directory, user, epoch);
         boolean launched = false, finished = false;
         try (ServerSocket server = new ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))) {
             JSONObject first = images.state();
@@ -127,7 +262,7 @@ final class MusicArtworkRuntime {
                         throw new IOException("Artwork executor bootstrap: " + detail);
                     }
                     if (!("WORKER " + token).equals(hello)) continue;
-                    events.accept("music_artwork_started", new Object[]{"broker_uid", android.os.Process.myUid(), "user", user});
+                    events.accept("music_artwork_started", new Object[]{"transport", "cellsservice_host", "broker_uid", android.os.Process.myUid(), "user", user});
                     boolean workerFailed = false;
                     while (true) {
                         String line = input.readLine();
@@ -179,7 +314,7 @@ final class MusicArtworkRuntime {
                             catch (Throwable secondary) { error("image_cleanup_secondary", secondary); }
                             output.println(imagesCleaned ? "ACK" : "RETAIN");
                             events.accept("music_artwork_stopped", new Object[]{"released", message.getBoolean("cleaned"), "error", workerFailed});
-                            if (workerFailed) synchronized (this) { failed = true; }
+                            if (workerFailed) synchronized (this) { if (sessionEpoch == epoch) failed = true; }
                             return;
                         } else if ("connected".equals(kind)) {
                             events.accept("music_artwork_identity", new Object[]{"worker_uid", message.getInt("uid"), "provider_uid", message.getInt("provider_uid"), "user", user});
@@ -199,19 +334,27 @@ final class MusicArtworkRuntime {
         final Context shell;
         final File directory;
         final MusicArtworkImages loader;
+        final int user;
+        final long epoch;
+        Selection preparedSelection;
         MediaMetadata previousMetadata;
         MediaController previousController;
         Bitmap previousImage;
         String path, track, lastDisplayed, packageName = "";
         boolean iconFallback;
         boolean previousArtwork, previousPlayerIcon;
-        Images(Context shell, File directory) {
+        Images(Context shell, File directory, int user, long epoch) {
             this.shell = shell; this.directory = directory;
+            this.user = user; this.epoch = epoch;
             loader = new MusicArtworkImages(shell, MusicArtworkRuntime.this::error);
         }
         JSONObject state() throws Exception {
             Selection selection = selected;
-            if (selection == null) return new JSONObject().put("active", false);
+            if (selection == null || sessionEpoch != epoch) return new JSONObject().put("active", false);
+            if (currentUser() != user) {
+                synchronized (MusicArtworkRuntime.this) { if (selected == selection) update(null, null); }
+                return new JSONObject().put("active", false);
+            }
             MediaController controller = selection.controller;
             AudioManager audio = (AudioManager) shell.getSystemService(Context.AUDIO_SERVICE);
             String focus = (String) audio.getClass().getMethod("getCurrentAudioFocusPackage").invoke(audio);
@@ -233,21 +376,25 @@ final class MusicArtworkRuntime {
                         selection.artwork, selection.playerIcon);
                 if (bitmap == null) path = null;
                 else if (path == null || previousImage == null || !bitmap.sameAs(previousImage)) {
-                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, bytes)) throw new IOException("Artwork PNG encoding failed");
-                    byte[] png = bytes.toByteArray();
-                    if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Cannot create artwork image directory");
-                    File image = new File(directory, digest(png) + ".png");
-                    if (!image.isFile()) { Files.write(image.toPath(), png); Os.chmod(image.getPath(), 0644); }
-                    path = image.getPath(); previousImage = bitmap;
+                    path = save(bitmap); previousImage = bitmap;
                 }
                 previousController = controller; previousMetadata = metadata; track = nextTrack;
                 previousArtwork = selection.artwork; previousPlayerIcon = selection.playerIcon;
                 packageName = controller.getPackageName();
                 iconFallback = loader.iconFallback;
             }
+            if (sessionEpoch != epoch) return new JSONObject().put("active", false);
             if (selected != selection) return new JSONObject().put("active", true);
+            preparedSelection = selection;
             return new JSONObject().put("active", true).put("track", track).put("cover", path == null ? JSONObject.NULL : path);
+        }
+        String save(Bitmap bitmap) throws Exception {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, bytes)) throw new IOException("Artwork PNG encoding failed");
+            File image = ArtworkFiles.writeImage(directory, bytes.toByteArray());
+            Os.chmod(directory.getPath(), 0755);
+            Os.chmod(image.getPath(), 0644);
+            return image.getPath();
         }
         void prune(String displayed) throws IOException {
             ArtworkFiles.pruneImages(directory, displayed == null, displayed, path, lastDisplayed);
@@ -276,11 +423,6 @@ final class MusicArtworkRuntime {
         }
         if (output.size() == 0) throw new IOException("Packaged artwork DEX is empty");
         return output.toByteArray();
-    }
-    private static String digest(byte[] bytes) throws Exception {
-        StringBuilder hex = new StringBuilder();
-        for (byte value : MessageDigest.getInstance("SHA-256").digest(bytes)) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-        return hex.toString();
     }
     private synchronized void error(String operation, Throwable failure) {
         String stack = trace(failure);

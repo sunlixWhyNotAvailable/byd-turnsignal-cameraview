@@ -19,6 +19,18 @@ public class DiagnosticLogPolicyTest {
     }
     @After public void restore() { DiagnosticLogPolicy.configure(previous); }
 
+    @Test public void artworkRepeatsAreExtendedButTransportAndRestorationFailuresRemainOrdinary() {
+        DiagnosticLogPolicy.configure(false);
+        assertFalse(DiagnosticLogPolicy.shouldProduce("music_artwork_direct_send"));
+        assertFalse(DiagnosticLogPolicy.shouldPersist("music_artwork_direct_send"));
+        for (String kind : new String[]{"music_artwork_started", "music_artwork_fallback", "music_artwork_restore",
+                "music_artwork_stopped", "music_artwork_error"})
+            assertTrue(kind, DiagnosticLogPolicy.shouldPersist(kind));
+        DiagnosticLogPolicy.configure(true);
+        assertTrue(DiagnosticLogPolicy.shouldProduce("music_artwork_direct_send"));
+        assertTrue(DiagnosticLogPolicy.shouldPersist("music_artwork_direct_send"));
+    }
+
     @Test public void recoveryTransitionsRemainOrdinaryWithoutPerFrameDiagnostics() {
         DiagnosticLogPolicy.configure(false);
         for (String kind : new String[]{"distance_source_service_transition", "distance_source_operation",

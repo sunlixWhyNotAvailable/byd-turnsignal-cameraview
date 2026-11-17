@@ -69,4 +69,21 @@ public class MusicArtworkImagesTest {
         assertSame(cover, MusicArtworkImages.compose(cover, null));
         assertNull(MusicArtworkImages.compose(null, null));
     }
+
+    @Test public void cleanArtworkReadsCurrentMetadataWithoutReusingTheComposedBadge() {
+        MusicArtworkImages images = new MusicArtworkImages(org.robolectric.RuntimeEnvironment.getApplication(),
+                (operation, error) -> fail(operation + ": " + error));
+        Bitmap first = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
+        first.eraseColor(Color.BLUE);
+        Bitmap current = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
+        current.eraseColor(Color.GREEN);
+        Bitmap icon = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888);
+        icon.eraseColor(Color.RED);
+        MusicArtworkImages.compose(first, icon);
+        Bitmap restored = images.artwork("player", new android.media.MediaMetadata.Builder()
+                .putBitmap(android.media.MediaMetadata.METADATA_KEY_ART, current).build(), -1);
+        assertSame(current, restored);
+        assertEquals(Color.GREEN, restored.getPixel(3, 3));
+        assertEquals(Color.BLUE, first.getPixel(3, 3));
+    }
 }

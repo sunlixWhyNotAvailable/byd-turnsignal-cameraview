@@ -9,10 +9,47 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.security.MessageDigest;
+import java.nio.file.StandardCopyOption;
+import java.io.FileOutputStream;
 
 /** Deletes only known files in an owned session; never traverses links or subdirectories. */
 public final class ArtworkFiles {
     private ArtworkFiles() {}
+
+    public static File writeImage(File directory, byte[] png) throws Exception {
+        if (Files.isSymbolicLink(directory.getParentFile().toPath()) || Files.isSymbolicLink(directory.toPath()))
+            throw new IOException("Artwork image directory is a symbolic link");
+        Files.createDirectories(directory.toPath());
+        StringBuilder hash = new StringBuilder();
+        for (byte value : MessageDigest.getInstance("SHA-256").digest(png))
+            hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+        File target = new File(directory, hash + ".png");
+        if (Files.exists(target.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            regular(target);
+            if (!Arrays.equals(png, Files.readAllBytes(target.toPath())))
+                throw new IOException("Existing artwork PNG differs from its content hash");
+            return target;
+        }
+        File temporary = Files.createTempFile(directory.toPath(), "pending-", ".tmp").toFile();
+        Throwable primary = null;
+        try {
+            try (FileOutputStream output = new FileOutputStream(temporary)) {
+                output.write(png); output.getFD().sync();
+            }
+            Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception | Error failure) {
+            primary = failure;
+            throw failure;
+        } finally {
+            try { Files.deleteIfExists(temporary.toPath()); }
+            catch (IOException secondary) {
+                if (primary != null) primary.addSuppressed(secondary);
+                else throw secondary;
+            }
+        }
+        return target;
+    }
 
     public static void pruneImages(File directory, boolean released, String... retained) throws IOException {
         if (Files.isSymbolicLink(directory.getParentFile().toPath()))
