@@ -3,11 +3,121 @@ package com.byd.extend;
 import static org.junit.Assert.*;
 
 import org.junit.Test;
+import static com.byd.extend.AvasEngineSessionPolicy.Action.*;
 
 /** Exercises the real event policy and queue together, without Android or audio. */
 public final class AvasAutomaticPlaybackIntegrationTest {
 
     @org.junit.Rule public final org.junit.rules.TemporaryFolder files = new org.junit.rules.TemporaryFolder();
+
+    @Test public void engineGearAutomationStartsWithoutOkAndStopsOnlyAtPark() {
+        AvasEngineSessionPolicy policy = gearEngine();
+        assertEquals(NONE, policy.observeGear(1));
+        assertEquals(NONE, policy.observeReady(true));
+        assertEquals(START, policy.observeGear(4));
+        for (int raw : new int[]{4, 2, 3, 5, 6, 255, 0, Integer.MIN_VALUE, 6}) {
+            assertEquals(NONE, policy.observeGear(raw));
+            assertTrue(policy.liveRequested());
+        }
+        assertEquals(STOP_WITH_TAIL, policy.observeGear(1));
+        assertEquals(NONE, policy.observeGear(1));
+        assertFalse(policy.liveRequested());
+        // A return to drive during the tail requests one later start, not a second player.
+        assertEquals(NONE, policy.observeGear(4));
+        assertTrue(policy.liveRequested());
+    }
+
+    @Test public void engineButtonChoiceLastsUntilNextParkBoundary() {
+        AvasEngineSessionPolicy startedInPark = gearEngine();
+        startedInPark.observeGear(1);
+        assertEquals(START, startedInPark.toggleLive());
+        assertEquals(NONE, startedInPark.observeGear(1));
+        assertEquals(NONE, startedInPark.configure(true, true, false, false));
+        assertTrue(startedInPark.manualOverride());
+        assertEquals(NONE, startedInPark.observeGear(4));
+        assertFalse(startedInPark.manualOverride());
+        assertEquals(STOP_WITH_TAIL, startedInPark.observeGear(1));
+
+        AvasEngineSessionPolicy stoppedInDrive = gearEngine();
+        stoppedInDrive.observeGear(4);
+        assertEquals(STOP_WITH_TAIL, stoppedInDrive.toggleLive());
+        assertEquals(NONE, stoppedInDrive.observeGear(2));
+        assertFalse(stoppedInDrive.liveRequested());
+        assertTrue(stoppedInDrive.manualOverride());
+        stoppedInDrive.observeGear(1);
+        assertFalse(stoppedInDrive.manualOverride());
+        stoppedInDrive.observeGear(4);
+        assertTrue(stoppedInDrive.liveRequested());
+    }
+
+    @Test public void engineCurrentGearReconcilesOnStartupAndOptionChanges() {
+        AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
+        policy.configure(true, true, false, true);
+        policy.observePower(2, true);
+        assertEquals(NONE, policy.observeGear(4));
+        assertEquals(START, policy.configure(true, true, false, false));
+        assertEquals(NONE, policy.configure(true, true, false, false));
+
+        AvasEngineSessionPolicy playingInPark = new AvasEngineSessionPolicy();
+        playingInPark.configure(true, true);
+        playingInPark.observePower(2, true);
+        playingInPark.observeGear(1);
+        assertEquals(START, playingInPark.observeReady(true));
+        assertEquals(STOP_WITH_TAIL, playingInPark.configure(true, true, false, false));
+
+        AvasEngineSessionPolicy unknown = gearEngine();
+        assertEquals(NONE, unknown.observeGear(255));
+        assertEquals(NONE, unknown.configure(true, true, false, false));
+        assertEquals(START, unknown.observeGear(3));
+    }
+
+    @Test public void engineTestReleasesToCurrentGearDemandAndOffClearsManualChoice() {
+        AvasEngineSessionPolicy policy = gearEngine();
+        policy.observeGear(1);
+        assertEquals(START, policy.manualStart());
+        assertEquals(NONE, policy.observeGear(4));
+        assertEquals(RESTORE, policy.manualStop());
+        assertEquals(START, policy.manualStart());
+        assertEquals(NONE, policy.observeGear(1));
+        assertEquals(STOP_NOW, policy.manualStop());
+        assertEquals(START, policy.toggleLive());
+        assertEquals(STOP_WITH_TAIL, policy.observePower(0, false));
+        assertFalse(policy.manualOverride());
+        assertFalse(policy.gearValid());
+        assertEquals(NONE, policy.observeGear(4));
+        assertFalse(policy.liveRequested());
+        assertEquals(NONE, policy.observePower(2, false));
+        assertFalse(policy.liveRequested());
+    }
+
+    @Test public void engineDefaultAndButtonOnlyKeepTheirExistingTriggers() {
+        AvasEngineSessionPolicy standard = new AvasEngineSessionPolicy();
+        standard.configure(true, true);
+        standard.observePower(2, true);
+        assertEquals(NONE, standard.observeGear(4));
+        assertEquals(NONE, standard.observeReady(false));
+        assertEquals(START, standard.observeReady(true));
+        assertEquals(NONE, standard.observeGear(1));
+        assertEquals(STOP_WITH_TAIL, standard.observePower(0, false));
+
+        AvasEngineSessionPolicy button = new AvasEngineSessionPolicy();
+        button.configure(true, true, true, false);
+        button.observePower(2, true);
+        assertEquals(NONE, button.observeReady(true));
+        assertEquals(NONE, button.observeGear(4));
+        assertEquals(START, button.toggleLive());
+        assertEquals(NONE, button.observeGear(1));
+        assertTrue(button.liveRequested());
+        assertEquals(Boolean.TRUE, button.rememberedChoice());
+    }
+
+    private static AvasEngineSessionPolicy gearEngine() {
+        AvasEngineSessionPolicy policy = new AvasEngineSessionPolicy();
+        policy.configure(true, true, false, false);
+        policy.observePower(2, true);
+        policy.observeReady(false);
+        return policy;
+    }
 
     @Test public void powerOffSettingsAreExclusiveAndSurviveOtherProfileEdits() {
         AvasConfig.Profile original = new AvasConfig.Profile("power_off", true, false, 15,

@@ -102,7 +102,8 @@ public final class AvasConfig {
                     .put("interiorEnabled", engine.interiorEnabled)
                     .put("interiorVolume", engine.interiorVolume)
                     .put("navigationPriority", engine.navigationPriority)
-                    .put("buttonOnly", engine.buttonOnly);
+                    .put("buttonOnly", engine.buttonOnly)
+                    .put("soundInPark", engine.soundInPark);
             return root.put("profiles", values).put("engine", engineValue).toString();
         } catch (Exception error) {
             throw new IllegalStateException("AVAS serialization failed", error);
@@ -191,6 +192,7 @@ public final class AvasConfig {
                 "exteriorVolume", "interiorEnabled", "interiorVolume"));
         if (value.has("navigationPriority")) keys.add("navigationPriority");
         if (value.has("buttonOnly")) keys.add("buttonOnly");
+        if (value.has("soundInPark")) keys.add("soundInPark");
         requireKeys(value, keys.toArray(new String[0]));
         return new Engine(strictBoolean(value.get("enabled")),
                 strictString(value.get("packId"), "packId"),
@@ -199,7 +201,8 @@ public final class AvasConfig {
                 strictBoolean(value.get("interiorEnabled")),
                 strictInt(value.get("interiorVolume"), "interiorVolume"),
                 !value.has("navigationPriority") || strictBoolean(value.get("navigationPriority")),
-                value.has("buttonOnly") && strictBoolean(value.get("buttonOnly")));
+                value.has("buttonOnly") && strictBoolean(value.get("buttonOnly")),
+                !value.has("soundInPark") || strictBoolean(value.get("soundInPark")));
     }
 
     private static int strictInt(Object value, String field) {
@@ -223,6 +226,7 @@ public final class AvasConfig {
         public final int interiorVolume;
         public final boolean navigationPriority;
         public final boolean buttonOnly;
+        public final boolean soundInPark;
 
         public Engine(boolean enabled, String packId, boolean exteriorEnabled,
                 int exteriorVolume, boolean interiorEnabled, int interiorVolume) {
@@ -238,6 +242,13 @@ public final class AvasConfig {
         public Engine(boolean enabled, String packId, boolean exteriorEnabled,
                 int exteriorVolume, boolean interiorEnabled, int interiorVolume,
                 boolean navigationPriority, boolean buttonOnly) {
+            this(enabled, packId, exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume,
+                    navigationPriority, buttonOnly, true);
+        }
+
+        public Engine(boolean enabled, String packId, boolean exteriorEnabled,
+                int exteriorVolume, boolean interiorEnabled, int interiorVolume,
+                boolean navigationPriority, boolean buttonOnly, boolean soundInPark) {
             if (!AvasEngineSettings.PACK_IDS.contains(packId)) {
                 throw new IllegalArgumentException("invalid engine pack id");
             }
@@ -253,6 +264,7 @@ public final class AvasConfig {
             this.interiorVolume = interiorVolume;
             this.navigationPriority = navigationPriority;
             this.buttonOnly = buttonOnly;
+            this.soundInPark = soundInPark;
         }
 
         public static Engine defaults() {

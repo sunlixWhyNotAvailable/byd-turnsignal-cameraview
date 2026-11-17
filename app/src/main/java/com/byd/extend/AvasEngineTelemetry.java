@@ -29,6 +29,8 @@ final class AvasEngineTelemetry implements AutoCloseable {
     private final Context context;
     private final ScheduledExecutorService executor;
     private final Consumer<JSONObject> events;
+    interface GearListener { void onGear(int raw, String source, long generation); }
+    private final GearListener gearListener;
     private final int speedFid = speedFid();
     private final int[] motorFids = motorFids(speedFid == -1807745016);
     private final int[] fids = {speedFid, SPEED_VALIDITY_FID, PEDAL_FID,
@@ -53,18 +55,23 @@ final class AvasEngineTelemetry implements AutoCloseable {
     private boolean latestRearValid;
     private volatile boolean closed;
     private volatile boolean enabled;
+    private boolean playbackEnabled;
+    private boolean gearEnabled;
+    private volatile boolean powerOff;
     private volatile long generation;
     private volatile boolean subscriptionFailed;
     private FixedBydTelemetryManager.Subscription subscription;
     private ScheduledFuture<?> next;
     private IBinder service;
     private long lastSubscribeAttempt = Long.MIN_VALUE;
+    private final String[] readErrors = new String[fids.length];
 
     AvasEngineTelemetry(Context context, ScheduledExecutorService executor,
-            Consumer<JSONObject> events) {
+            Consumer<JSONObject> events, GearListener gearListener) {
         this.context = context;
         this.executor = executor;
         this.events = events;
+        this.gearListener = gearListener;
         Arrays.fill(values, MISSING);
         Arrays.fill(sources, "unavailable");
     }
@@ -72,49 +79,89 @@ final class AvasEngineTelemetry implements AutoCloseable {
     void setEnabled(boolean value) {
         if (closed) return;
         executor.execute(() -> {
-            if (closed || enabled == value) return;
-            enabled = value;
-            generation++;
-            cancel();
-            synchronized (AvasEngineTelemetry.this) {
-                invalidate();
-                if (!value) {
-                    frontScale.reset();
-                    rearScale.reset();
-                }
-            }
-            lastSubscribeAttempt = Long.MIN_VALUE;
-            if (value) tick();
+            if (closed || playbackEnabled == value) return;
+            playbackEnabled = value;
+            restart();
         });
+    }
+
+    void setGearEnabled(boolean value) {
+        synchronized (this) {
+            if (closed || gearEnabled == value) return;
+            gearEnabled = value;
+            generation++;
+        }
+        executor.execute(this::restart);
+    }
+
+    void onPower(int raw) {
+        if (raw < 0 || raw > 4) return;
+        synchronized (this) {
+            if (closed || powerOff == (raw == 0)) return;
+            powerOff = raw == 0;
+            // Invalidate deliveries immediately, including one waiting for the runtime lock.
+            generation++;
+        }
+        executor.execute(this::restart);
+    }
+
+    boolean currentGearDelivery(long session) {
+        return session == generation && enabled && !powerOff && !closed;
+    }
+
+    private void restart() {
+        if (closed) return;
+        synchronized (this) {
+            generation++;
+            enabled = playbackEnabled || gearEnabled && !powerOff;
+            invalidate();
+            if (!playbackEnabled) {
+                frontScale.reset();
+                rearScale.reset();
+            }
+        }
+        cancel();
+        subscriptionFailed = false;
+        lastSubscribeAttempt = Long.MIN_VALUE;
+        if (enabled) tick();
     }
 
     private void tick() {
         if (!enabled || closed) return;
+        if (next != null) next.cancel(false);
         if (subscriptionFailed) {
             if (subscription != null) subscription.close();
             subscription = null;
             subscriptionFailed = false;
-            generation++;
+            synchronized (this) { generation++; }
         }
+        long session = generation;
         long now = SystemClock.elapsedRealtime();
         if (subscription == null && (lastSubscribeAttempt == Long.MIN_VALUE
                 || now - lastSubscribeAttempt >= 60_000)) subscribe();
         for (int i = 0; i < fids.length && enabled && !closed; i++) {
+            if (!playbackEnabled && i != 6) continue;
             long before;
             synchronized (this) { before = revisions[i]; }
             Integer raw = read(i);
             long readAt = SystemClock.elapsedRealtime();
+            boolean accepted = false;
             synchronized (this) {
+                if (session != generation || closed) return;
                 if (before == revisions[i]) {
                     values[i] = raw == null ? MISSING : raw;
                     available[i] = raw != null;
                     sources[i] = raw == null ? "unavailable" : "get";
                     receivedAt[i] = readAt;
                     revisions[i]++;
+                    accepted = true;
                 }
             }
+            if (accepted && i == 6 && currentGearDelivery(session)) {
+                gearListener.onGear(raw == null ? MISSING : raw, raw == null ? "unavailable" : "get", session);
+            }
         }
-        if (enabled && !closed) next = executor.schedule(this::tick,
+        if (session == generation && enabled && !closed) next = executor.schedule(this::tick,
                 subscription == null ? 1000 : 60_000, TimeUnit.MILLISECONDS);
     }
 
@@ -123,7 +170,7 @@ final class AvasEngineTelemetry implements AutoCloseable {
         long session = generation;
         try {
             subscription = FixedBydTelemetryManager.get(context).subscribe(
-                    new FixedBydTelemetryManager.Request[]{
+                    playbackEnabled ? new FixedBydTelemetryManager.Request[]{
                         new FixedBydTelemetryManager.Request(DEVICE_SPEED,
                                 FixedBydTelemetryManager.ValueType.FLOAT, speedFid),
                         new FixedBydTelemetryManager.Request(DEVICE_SPEED,
@@ -131,9 +178,12 @@ final class AvasEngineTelemetry implements AutoCloseable {
                                 BRAKE_FID, BRAKE_VALIDITY_FID),
                         new FixedBydTelemetryManager.Request(DEVICE_GEARBOX, GEAR_FID),
                         new FixedBydTelemetryManager.Request(DEVICE_MOTOR,
-                                motorFids[0], motorFids[1])},
+                                motorFids[0], motorFids[1])}
+                    : new FixedBydTelemetryManager.Request[]{
+                        new FixedBydTelemetryManager.Request(DEVICE_GEARBOX, GEAR_FID)},
                     new FixedBydTelemetryManager.Listener() {
                         @Override public void onValue(int device, int fid, int raw, long at) {
+                            long gearRevision;
                             synchronized (AvasEngineTelemetry.this) {
                                 if (session != generation || !enabled || closed) return;
                                 for (int i = 0; i < fids.length; i++) {
@@ -146,25 +196,35 @@ final class AvasEngineTelemetry implements AutoCloseable {
                                         break;
                                     }
                                 }
+                                gearRevision = revisions[6];
                             }
+                            if (device == DEVICE_GEARBOX && fid == GEAR_FID) executor.execute(() -> {
+                                synchronized (AvasEngineTelemetry.this) {
+                                    if (gearRevision != revisions[6]) return;
+                                }
+                                if (currentGearDelivery(session)) gearListener.onGear(raw, "callback", session);
+                            });
                         }
                         @Override public void onError(String reason, long at) {
                             if (session != generation || closed) return;
                             executor.execute(() -> retryNow(
                                     session == generation && enabled && !closed, next, () -> {
-                                        invalidate();
+                                        synchronized (AvasEngineTelemetry.this) { invalidate(); }
+                                        if (currentGearDelivery(session)) {
+                                            gearListener.onGear(MISSING, "subscription_error", session);
+                                        }
                                         subscriptionFailed = true;
                                         log("error", reason);
                                         tick();
                                     }));
                         }
                     });
-            log("callback", "fixed_read_only_inputs speed_fid=" + speedFid
+            log("callback", playbackEnabled ? "fixed_read_only_inputs speed_fid=" + speedFid
                     + " front_motor_fid=" + motorFids[0]
-                    + " rear_motor_fid=" + motorFids[1]);
+                    + " rear_motor_fid=" + motorFids[1] : "gear_only fid=" + GEAR_FID);
         } catch (Exception failure) {
             subscription = null;
-            log("fallback_1s", failure.toString());
+            log("fallback_1s", android.util.Log.getStackTraceString(failure));
         }
     }
 
@@ -243,18 +303,36 @@ final class AvasEngineTelemetry implements AutoCloseable {
             data.writeInterfaceToken(service.getInterfaceDescriptor());
             data.writeInt(deviceFor(index));
             data.writeInt(fids[index]);
-            if (!service.transact(index == 0 ? 7 : 5, data, reply, 0)
-                    || reply.dataAvail() < 8) return null;
+            if (!service.transact(index == 0 ? 7 : 5, data, reply, 0)) {
+                readFailure(index, "transact_returned_false");
+                return null;
+            }
+            if (reply.dataAvail() < 8) {
+                readFailure(index, "short_reply bytes=" + reply.dataAvail());
+                return null;
+            }
             int status = reply.readInt();
             int raw = reply.readInt();
-            return status == 0 ? raw : null;
+            if (status != 0) {
+                readFailure(index, "oem_status=" + status + " raw=" + raw);
+                return null;
+            }
+            readErrors[index] = null;
+            return raw;
         } catch (Exception failure) {
             service = null;
+            readFailure(index, android.util.Log.getStackTraceString(failure));
             return null;
         } finally {
             data.recycle();
             reply.recycle();
         }
+    }
+
+    private void readFailure(int index, String reason) {
+        if (reason.equals(readErrors[index])) return;
+        readErrors[index] = reason;
+        log("read_error", "GET device=" + deviceFor(index) + " fid=" + fids[index] + " " + reason);
     }
 
     private static int deviceFor(int index) {

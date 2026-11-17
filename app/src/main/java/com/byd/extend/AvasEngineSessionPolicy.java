@@ -1,6 +1,6 @@
 package com.byd.extend;
 
-/** OK controls live sound; a manual test temporarily owns the single output without disabling live. */
+/** OK or the selector controls live sound; a test temporarily owns the single output. */
 public final class AvasEngineSessionPolicy {
     public static final int POWER_OFF = 0;
     public static final int POWER_ACC = 1;
@@ -28,6 +28,10 @@ public final class AvasEngineSessionPolicy {
     private boolean ignitionPending;
     private boolean configured;
     private boolean buttonOnly;
+    private boolean soundInPark = true;
+    private int rawGear = Integer.MIN_VALUE;
+    private Boolean inPark;
+    private Boolean lastKnownInPark;
     private Boolean rememberedChoice;
 
     public AvasEngineSessionPolicy() { this(null); }
@@ -41,10 +45,16 @@ public final class AvasEngineSessionPolicy {
     }
 
     public Action configure(boolean enabled, boolean outputsPresent, boolean buttonOnly) {
+        return configure(enabled, outputsPresent, buttonOnly, true);
+    }
+
+    public Action configure(boolean enabled, boolean outputsPresent, boolean buttonOnly, boolean soundInPark) {
+        boolean wasGearAutomatic = gearAutomatic();
         if (buttonOnly && !this.buttonOnly && (configured || rememberedChoice == null)) {
             rememberedChoice = liveRequested;
         }
         this.buttonOnly = buttonOnly;
+        this.soundInPark = soundInPark;
         configured = true;
         boolean wasPlaying = active || tailing;
         this.enabled = enabled;
@@ -59,14 +69,21 @@ public final class AvasEngineSessionPolicy {
             tailing = false;
             recoveryPending = false;
             ignitionPending = false;
+            clearGear();
             return wasPlaying ? Action.STOP_NOW : Action.NONE;
         }
+        if (wasGearAutomatic && !gearAutomatic() && !buttonOnly && !liveChoiceMade
+                && Boolean.TRUE.equals(ready)) requestAutomatic(true);
         return reconcileReady();
     }
 
     public Action observeReady(Boolean present) {
         if (hasValidPower && lastValidPower == POWER_OFF) return Action.NONE;
         ready = present;
+        if (gearAutomatic()) {
+            if (present != null) lastKnownReady = present;
+            return Action.NONE;
+        }
         if (present != null) {
             if (present) {
                 boolean wasLive = liveRequested;
@@ -92,10 +109,55 @@ public final class AvasEngineSessionPolicy {
         if (!available() || !hasValidPower || powerUnknown || lastValidPower == POWER_OFF) {
             return Action.NONE;
         }
+        if (gearAutomatic() && !liveChoiceMade && inPark != null) {
+            Action action = requestAutomatic(!inPark);
+            if (action != Action.NONE) return action;
+        }
         if (!liveRequested || testing || active || tailing) return Action.NONE;
-        if (recoveryPending && !Boolean.TRUE.equals(ready)) return Action.NONE;
-        if (!liveChoiceMade && !Boolean.TRUE.equals(ready)) return Action.NONE;
+        if (recoveryPending && !recoveryAllowed()) return Action.NONE;
+        if (!liveChoiceMade && !automaticReady()) return Action.NONE;
         return start(recoveryPending || !ignitionPending, false);
+    }
+
+    public Action observeGear(int raw) {
+        if (!available() || hasValidPower && lastValidPower == POWER_OFF) return Action.NONE;
+        rawGear = raw;
+        inPark = raw >= 1 && raw <= 6 ? raw == 1 : null;
+        if (inPark == null) return Action.NONE;
+        if (gearAutomatic() && lastKnownInPark != null && !lastKnownInPark.equals(inPark)) {
+            liveChoiceMade = false;
+        }
+        lastKnownInPark = inPark;
+        return gearAutomatic() ? reconcileReady() : Action.NONE;
+    }
+
+    private Action requestAutomatic(boolean value) {
+        boolean wasLive = liveRequested;
+        liveRequested = value;
+        if (value) {
+            if (!wasLive && !testing) ignitionPending = true;
+            return Action.NONE;
+        }
+        ignitionPending = false;
+        recoveryPending = false;
+        if (testing || tailing || !active) return Action.NONE;
+        active = false;
+        tailing = true;
+        return Action.STOP_WITH_TAIL;
+    }
+
+    private boolean automaticReady() {
+        return gearAutomatic() ? Boolean.FALSE.equals(inPark) : Boolean.TRUE.equals(ready);
+    }
+
+    private boolean recoveryAllowed() {
+        return automaticReady() || gearAutomatic() && liveChoiceMade;
+    }
+
+    void clearGear() {
+        rawGear = Integer.MIN_VALUE;
+        inPark = null;
+        lastKnownInPark = null;
     }
 
     public Action observePower(int raw, boolean baseline) {
@@ -111,6 +173,7 @@ public final class AvasEngineSessionPolicy {
         lastValidPower = raw;
 
         if (raw == POWER_OFF) {
+            clearGear();
             if (hadValidPower && previousPower == POWER_OFF) return Action.NONE;
             ready = null;
             lastKnownReady = false;
@@ -175,9 +238,9 @@ public final class AvasEngineSessionPolicy {
 
     private Action startAfterTail() {
         if (!available() || !liveRequested || testing || active) return Action.NONE;
-        if (recoveryPending && !Boolean.TRUE.equals(ready)) return Action.NONE;
+        if (recoveryPending && !recoveryAllowed()) return Action.NONE;
         if (!liveChoiceMade && (!hasValidPower || powerUnknown || lastValidPower == POWER_OFF
-                || !Boolean.TRUE.equals(ready))) return Action.NONE;
+                || !automaticReady())) return Action.NONE;
         return start(recoveryPending || !ignitionPending, false);
     }
 
@@ -188,7 +251,9 @@ public final class AvasEngineSessionPolicy {
         active = false;
         recoveryPending = false;
         ignitionPending = false;
-        return liveRequested ? start(true, false) : Action.STOP_NOW;
+        if (!gearAutomatic()) return liveRequested ? start(true, false) : Action.STOP_NOW;
+        Action action = reconcileReady();
+        return action == Action.NONE ? Action.STOP_NOW : action;
     }
 
     /** A failed test releases its override; a failed live output retains the existing retry policy. */
@@ -203,7 +268,7 @@ public final class AvasEngineSessionPolicy {
         if (wasTesting) {
             recoveryPending = false;
             ignitionPending = false;
-            return liveRequested ? start(true, false) : Action.NONE;
+            return gearAutomatic() ? reconcileReady() : liveRequested ? start(true, false) : Action.NONE;
         }
         if (wasActive && liveRequested) recoveryPending = true;
         return Action.NONE;
@@ -216,6 +281,10 @@ public final class AvasEngineSessionPolicy {
     public boolean hasValidPower() { return hasValidPower && !powerUnknown; }
     public int rawPower() { return rawPower; }
     public int lastValidPower() { return lastValidPower; }
+    public boolean gearAutomatic() { return !soundInPark && !buttonOnly; }
+    public int rawGear() { return rawGear; }
+    public boolean gearValid() { return inPark != null; }
+    public boolean manualOverride() { return liveChoiceMade; }
 
     private Action start(boolean restore, boolean test) {
         active = true;

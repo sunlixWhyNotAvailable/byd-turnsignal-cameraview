@@ -12,6 +12,24 @@ import java.util.Collections;
 public final class AvasProfileOutputTest {
     @org.junit.Rule public final org.junit.rules.TemporaryFolder files = new org.junit.rules.TemporaryFolder();
 
+    @Test public void engineParkOptionSurvivesDiskRoundTripAndLegacyConfigDefaultsOn() throws Exception {
+        AvasConfig config = AvasConfig.empty().withEngine(new AvasConfig.Engine(true,
+                AvasEngineSettings.DEFAULT_PACK_ID, true, 30, false, 15, true, false, false));
+        config = config.withProfile(config.profile("lock").withInternalSpeaker(true));
+        java.io.File path = files.newFile("engine.json");
+        Files.write(path.toPath(), config.toJson().getBytes(StandardCharsets.UTF_8));
+        AvasConfig restored = AvasConfig.parse(new String(Files.readAllBytes(path.toPath()), StandardCharsets.UTF_8));
+        assertFalse(restored.engine.soundInPark);
+        assertEquals(30, restored.engine.exteriorVolume);
+        assertTrue(restored.profile("lock").internalSpeaker);
+
+        JSONObject old = new JSONObject(restored.toJson());
+        old.getJSONObject("engine").remove("soundInPark");
+        assertTrue(AvasConfig.parse(old.toString()).engine.soundInPark);
+        old.getJSONObject("engine").put("soundInPark", "false");
+        assertThrows(IllegalArgumentException.class, () -> AvasConfig.parse(old.toString()));
+    }
+
     @Test public void persistedRoutesAreIndependentAndSurviveProfileEdits() throws Exception {
         AvasConfig config = AvasConfig.empty();
         for (String id : AvasConfig.PROFILE_IDS) {

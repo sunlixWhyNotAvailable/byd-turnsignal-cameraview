@@ -72,6 +72,11 @@ internal fun AvasEngineCard(
                     color = colors.muted, fontSize = 12.sp)
             }
 
+            SwitchLine(strings.resource(R.string.avas_engine_sound_in_park),
+                strings.resource(R.string.avas_engine_sound_in_park_hint), state.soundInPark,
+                { send(AvasActionKind.SetEngineSoundInPark, enabled = it) }, colors,
+                enabled = state.enabled)
+
             SwitchLine(strings.resource(R.string.avas_engine_navigation_priority),
                 strings.resource(R.string.avas_engine_navigation_priority_hint), state.navigationPriority,
                 { send(AvasActionKind.SetEngineNavigationPriority, enabled = it) }, colors,

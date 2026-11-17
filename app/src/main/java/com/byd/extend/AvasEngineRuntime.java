@@ -53,18 +53,22 @@ final class AvasEngineRuntime implements AutoCloseable {
         this.savedChoice = savedChoice;
         this.saveChoice = saveChoice;
         policy = new AvasEngineSessionPolicy(savedChoice);
-        telemetry = new AvasEngineTelemetry(context, executor, events);
+        telemetry = new AvasEngineTelemetry(context, executor, events, this::onGear);
         readiness = new AvasEngineReadyMonitor(context, executor, this::onReady, events);
     }
 
     synchronized void configure(AvasConfig.Engine next) {
         if (closed) return;
         AvasConfig.Engine previous = config;
+        // An idle OK/button-only mode has no selector subscription; require a fresh read.
+        if (current == null && (previous.soundInPark || previous.buttonOnly)) policy.clearGear();
         config = next;
         readiness.setEnabled(next.enabled && hasOutput(next));
-        AvasEngineSessionPolicy.Action action = policy.configure(next.enabled, hasOutput(next), next.buttonOnly);
+        AvasEngineSessionPolicy.Action action = policy.configure(next.enabled, hasOutput(next),
+                next.buttonOnly, next.soundInPark);
+        telemetry.setGearEnabled(next.enabled && hasOutput(next) && policy.gearAutomatic());
         persistChoice();
-        if (action != AvasEngineSessionPolicy.Action.NONE) {
+        if (action != AvasEngineSessionPolicy.Action.NONE || previous.soundInPark != next.soundInPark) {
             logPolicy("configure", policy.rawPower(), false, action);
         }
         if (!next.enabled || !hasOutput(next)) {
@@ -85,6 +89,7 @@ final class AvasEngineRuntime implements AutoCloseable {
 
     synchronized void onPower(int value, boolean baseline) {
         if (closed) return;
+        telemetry.onPower(value);
         AvasEngineSessionPolicy.Action action = policy.observePower(value, baseline);
         readiness.onPower(value);
         if (!loggedPower || value != lastLoggedPower || action != AvasEngineSessionPolicy.Action.NONE) {
@@ -93,6 +98,17 @@ final class AvasEngineRuntime implements AutoCloseable {
             loggedPower = true;
         }
         apply(action, "power_off");
+    }
+
+    private synchronized void onGear(int raw, String source, long generation) {
+        if (closed || !telemetry.currentGearDelivery(generation)) return;
+        int previous = policy.rawGear();
+        AvasEngineSessionPolicy.Action action = policy.observeGear(raw);
+        if (policy.gearAutomatic() && (previous != policy.rawGear()
+                || action != AvasEngineSessionPolicy.Action.NONE)) {
+            logPolicy("gear_" + source, policy.rawPower(), false, action);
+        }
+        apply(action, "park");
     }
 
     private synchronized void onReady(Boolean present) {
@@ -186,6 +202,9 @@ final class AvasEngineRuntime implements AutoCloseable {
         log("avas_engine_policy", "source", source, "power_raw", rawPower,
                 "power_valid", policy.hasValidPower(), "last_valid_power", policy.lastValidPower(),
                 "baseline", baseline, "action", action.name(),
+                "sound_in_park", config.soundInPark, "gear_automatic", policy.gearAutomatic(),
+                "gear_raw", policy.rawGear(), "gear_valid", policy.gearValid(),
+                "manual_override", policy.manualOverride(),
                 "desired_active", policy.desiredActive(), "test_active", policy.testActive(),
                 "live_requested", policy.liveRequested());
     }

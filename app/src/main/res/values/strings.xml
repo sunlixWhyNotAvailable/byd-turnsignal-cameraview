@@ -2,6 +2,8 @@
 <resources>
     <string name="avas_engine_button_only">Toggle engine sound only with the button</string>
     <string name="avas_engine_button_only_hint">Remember the sound state between vehicle power cycles.</string>
+    <string name="avas_engine_sound_in_park">Sound in P</string>
+    <string name="avas_engine_sound_in_park_hint">Button activation takes priority</string>
     <string name="avas_engine_navigation_priority">Navigation priority</string>
     <string name="avas_engine_navigation_priority_hint">Release the exterior audio channel for navigation. The beginning of a prompt may be lost.</string>
     <string name="correction_strength">"Strength"</string>

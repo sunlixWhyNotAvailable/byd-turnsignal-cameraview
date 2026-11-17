@@ -3296,7 +3296,7 @@ public final class CameraProbeActivity extends ComponentActivity
                         config.engine.interiorEnabled, config.engine.interiorVolume,
                         avasEngineState, avasEngineError, avasEngineTestActive,
                         CameraButtonBindings.load(preferences, CameraButtonBindings.Action.AvasEngine),
-                        config.engine.navigationPriority, config.engine.buttonOnly));
+                        config.engine.navigationPriority, config.engine.buttonOnly, config.engine.soundInPark));
     }
 
     @Override
@@ -3458,8 +3458,11 @@ public final class CameraProbeActivity extends ComponentActivity
             int interiorVolume = engine.interiorVolume;
             boolean navigationPriority = engine.navigationPriority;
             boolean buttonOnly = engine.buttonOnly;
+            boolean soundInPark = engine.soundInPark;
             if (kind == AvasActionKind.SetEnabled && action.getBooleanValue() != null) {
                 enabled = action.getBooleanValue();
+            } else if (kind == AvasActionKind.SetEngineSoundInPark && action.getBooleanValue() != null) {
+                soundInPark = action.getBooleanValue();
             } else if (kind == AvasActionKind.SetEngineNavigationPriority
                     && action.getBooleanValue() != null) {
                 navigationPriority = action.getBooleanValue();
@@ -3484,7 +3487,8 @@ public final class CameraProbeActivity extends ComponentActivity
                 return;
             }
             AvasConfig.Engine updated = new AvasConfig.Engine(enabled, packId,
-                    exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume, navigationPriority, buttonOnly);
+                    exteriorEnabled, exteriorVolume, interiorEnabled, interiorVolume,
+                    navigationPriority, buttonOnly, soundInPark);
             avasLibrary.saveConfig(config.withEngine(updated));
             if (!enabled && productionUi != null
                     && productionUi.getState().getDialog() != null

@@ -3044,7 +3044,7 @@ final class TurnSignalController {
                 CameraButtonBindings.Action.AvasEngine).keyCode < 0) {
             config = config.withEngine(new AvasConfig.Engine(engine.enabled, engine.packId,
                     engine.exteriorEnabled, engine.exteriorVolume, engine.interiorEnabled,
-                    engine.interiorVolume, engine.navigationPriority, false));
+                    engine.interiorVolume, engine.navigationPriority, false, engine.soundInPark));
         }
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
