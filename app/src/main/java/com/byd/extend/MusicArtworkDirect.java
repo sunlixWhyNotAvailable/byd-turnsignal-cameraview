@@ -8,7 +8,10 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 
-/** Uses the broker's real shell identity, without cellsservice_host or provider writes. */
+/**
+ * Direct auto_container PNG-path transport adapted from BYD EV Pro (https://evpro.app/).
+ * Uses the broker's real shell identity, without cellsservice_host or provider writes.
+ */
 final class MusicArtworkDirect {
     static final class Failure extends IOException {
         Failure(String operation, Throwable cause) { super(operation, cause); }

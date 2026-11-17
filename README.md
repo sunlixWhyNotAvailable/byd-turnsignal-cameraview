@@ -450,6 +450,8 @@ Enable these separately under `BYD integrations`.
 - **Engine visualization:** a separate, default-off option controls visualization of engine-only interior audio, not its playback. If other audio is mixed with it, the visualizer cannot isolate the engine from the combined signal.
 - **Weather:** update the stock BYD weather card using location and Open-Meteo data. This needs location permission and internet access. The city name depends on the system geocoder; when unavailable, a localized “Current location” label is used.
 
+The new direct method for sending track artwork to the instrument cluster is adapted from [BYD EV Pro](https://evpro.app/): a shell helper passes the PNG file path to the OEM `auto_container` service.
+
 <details>
 <summary>Music and weather settings screenshots</summary>
 
