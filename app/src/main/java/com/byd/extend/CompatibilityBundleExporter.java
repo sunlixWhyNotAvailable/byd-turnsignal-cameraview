@@ -1175,11 +1175,17 @@ final class CompatibilityBundleExporter {
         private final AtomicBoolean cancellationRequested = new AtomicBoolean();
         private final AtomicReference<Socket> activeSocket = new AtomicReference<>();
         private final ProgressListener progressListener;
+        private final java.util.function.BooleanSupplier externalCancellation;
 
         ExportControl() { this(null); }
 
         ExportControl(ProgressListener progressListener) {
+            this(progressListener, () -> false);
+        }
+
+        ExportControl(ProgressListener progressListener, java.util.function.BooleanSupplier externalCancellation) {
             this.progressListener = progressListener;
+            this.externalCancellation = externalCancellation;
         }
 
         void cancel() {
@@ -1191,7 +1197,7 @@ final class CompatibilityBundleExporter {
         }
 
         @Override public boolean isCancellationRequested() {
-            return cancellationRequested.get();
+            return cancellationRequested.get() || externalCancellation.getAsBoolean();
         }
 
         @Override public void registerActiveSocket(Socket socket) {

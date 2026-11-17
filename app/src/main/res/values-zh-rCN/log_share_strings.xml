@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="log_share_save_as">另存为…</string>
+    <string name="log_share_title">分享诊断日志</string>
+    <string name="log_share_selection">所有已保存的日志</string>
+    <string name="log_share_archive_hint">已保存的日志将打包为一个 ZIP 文件。</string>
+    <string name="log_share_sensitive">压缩包可能包含车辆和固件信息、摄像头和服务诊断、应用名称及网络信息。请仅与可信任的人分享。</string>
+    <string name="log_share_sentry_notice">发送给开发者使用 Sentry 服务。压缩后的 ZIP 必须小于 39 MB。</string>
+    <string name="log_share_save_hint">“另存为…”可将 ZIP 保存到所选文件夹或 USB 存储设备。</string>
+    <string name="log_share_developer">发送给开发者</string>
+    <string name="log_share_other_app">其他应用</string>
+    <string name="log_share_cooldown">%1$d 秒</string>
+    <string name="log_share_comment_title">日志备注</string>
+    <string name="log_share_comment_hint">可选：发生了什么，时间是什么时候？</string>
+    <string name="log_share_ok">确定</string>
+    <string name="log_share_upload_title">发送日志</string>
+    <string name="log_share_waiting">等待日志写入完成</string>
+    <string name="log_share_copying">正在复制文件</string>
+    <string name="log_share_archiving">正在创建 ZIP</string>
+    <string name="log_share_uploading">正在发送给开发者</string>
+    <string name="log_share_success">日志已发送</string>
+    <string name="log_share_oversized">ZIP 大小超出限制</string>
+    <string name="log_share_cancelled">已取消</string>
+    <string name="log_share_shared">已打开应用选择器</string>
+    <string name="log_share_card_summary">ZIP：%1$s MB · %2$d 秒</string>
+    <string name="log_share_details">详情</string>
+    <string name="log_share_limit_title">压缩包超出 Sentry 发送大小限制</string>
+    <string name="log_share_limit_body">ZIP：%1$d MB。Sentry 要求小于 39 MB。您可以通过其他应用分享同一个压缩包。</string>
+    <string name="log_share_close_hint">关闭卡片不会停止发送。只能在准备压缩包时停止。</string>
+    <string name="log_share_no_adb">没有 ADB 时，仅发送可用的应用日志，不包含系统日志。</string>
+    <string name="log_share_unconfirmed">尚未确认送达</string>
+    <string name="log_share_failed">无法发送日志</string>
+    <string name="log_share_ready">归档已准备好</string>
+    <string name="log_share_saved">归档已保存</string>
+    <string name="log_share_stop">停止</string>
+</resources>

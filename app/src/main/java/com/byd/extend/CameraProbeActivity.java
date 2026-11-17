@@ -923,7 +923,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 || cameraPermissionPending || !activityResumed || !hasWindowFocus()
                 || !runtimePermissionWindowAvailable()
                 || settingsTransferInProgress || settingsReloadPending
-                || logExportInProgress || compatibilityExportInProgress || adbAuthPending
+                || logShareBlocksUi() || compatibilityExportInProgress || adbAuthPending
                 || productionUi != null && productionUi.getState().getDialog() != null) {
             advanceStartupAuthorizationFlow();
             return;
@@ -1451,7 +1451,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private boolean beginSettingsTransfer(SettingsOperation operation) {
-        if (settingsTransferInProgress || settingsReloadPending || logExportInProgress
+        if (settingsTransferInProgress || settingsReloadPending || logShareBlocksUi()
                 || compatibilityExportInProgress || shutdownRequested || activityDestroyed
                 || isFinishing()) return false;
         settingsTransferInProgress = true;
@@ -1706,7 +1706,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void confirmLegacyAccessRestore() {
-        if (settingsTransferInProgress || settingsReloadPending || logExportInProgress
+        if (settingsTransferInProgress || settingsReloadPending || logShareBlocksUi()
                 || compatibilityExportInProgress || shutdownRequested || activityDestroyed
                 || !LegacySettingsImporter.needsAccessRestore(this)) return;
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -1939,41 +1939,18 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void confirmDiagnosticLogShare() {
-        confirmDiagnosticLogExport(false);
+        LogShareRuntime.get(this).setActivityLog(activityLog);
+        LogShareRuntime.get(this).open(false);
+    }
+
+    private boolean logShareBlocksUi() {
+        LogShareRuntime runtime = LogShareRuntime.get(this);
+        return logExportInProgress || runtime.hasPreparation() || runtime.isModalVisible();
     }
 
     private void confirmDiagnosticLogExport(boolean saveAs) {
-        if (logExportInProgress || compatibilityExportInProgress
-                || shutdownRequested || activityDestroyed) return;
-        showRuntimeDialog(RuntimeDialogOwner.LOGS, DialogKind.Message,
-                runtimeText(saveAs ? R.string.runtime_archive_save_title : R.string.runtime_logs_share_title),
-                runtimeText(R.string.runtime_logs_share_message), true,
-                runtimeText(R.string.runtime_create), runtimeText(R.string.runtime_cancel), "",
-                () -> startDiagnosticLogExport(saveAs), () -> {});
-    }
-
-    private void startDiagnosticLogExport(boolean saveAs) {
-        if (logExportInProgress || compatibilityExportInProgress
-                || shutdownRequested || activityDestroyed) return;
-        logExportInProgress = true;
-        exportArchiveToDocument = saveAs;
-        diagnosticDocumentCopy = false;
-        diagnosticExportProgress = null;
-        diagnosticExportControl = newDiagnosticExportControl();
-        showDiagnosticExportProgress();
-        publishSettingsOperation(SettingsOperation.Logs,
-                runtimeText(R.string.runtime_logs_progress), StatusTone.Warning, true, true);
-        record("diagnostic_log_export", "state", "flush_requested");
-        try {
-            CameraHelperService.flushLogs(this, new ResultReceiver(mainHandler) {
-                @Override
-                protected void onReceiveResult(int resultCode, Bundle resultData) {
-                    exportDiagnosticLogsAfterFlush();
-                }
-            });
-        } catch (Throwable error) {
-            finishDiagnosticLogExport(null, error);
-        }
+        LogShareRuntime.get(this).setActivityLog(activityLog);
+        LogShareRuntime.get(this).open(saveAs);
     }
 
     private CompatibilityBundleExporter.ExportControl newDiagnosticExportControl() {
@@ -2020,111 +1997,6 @@ public final class CameraProbeActivity extends ComponentActivity
         if (!progress.currentPath.isEmpty()) message += "\n" + progress.currentPath;
         productionUi.showDialog(dialog.withArchiveProgress(message, progress.bytes, progress.totalBytes,
                 finalizing, !finalizing, finalizing ? null : runtimeText(R.string.runtime_cancel)));
-    }
-
-    private void exportDiagnosticLogsAfterFlush() {
-        if (!logExportInProgress) return;
-        if (diagnosticExportControl != null && diagnosticExportControl.isCancellationRequested()) {
-            finishDiagnosticLogExport(null, new CompatibilityBundleExporter.CancellationException());
-            return;
-        }
-        if (activityDestroyed || shutdownRequested) {
-            finishDiagnosticLogExport(null, null);
-            return;
-        }
-        AsyncServiceLog log = activityLog;
-        if (log != null) {
-            log.flush(this::exportDiagnosticLogsAfterActivityFlush);
-        } else exportDiagnosticLogsAfterActivityFlush();
-    }
-
-    private void exportDiagnosticLogsAfterActivityFlush() {
-        final CompatibilityBundleExporter.ExportControl control = diagnosticExportControl;
-        try {
-            logExportExecutor.execute(() -> {
-                File archive = null;
-                Throwable failure = null;
-                try {
-                    DiagnosticLogExporter.Snapshot snapshot =
-                            DiagnosticLogExporter.snapshot(this);
-                    record("diagnostic_log_export", "state", "snapshot_ready",
-                            "source_count", snapshot.sources.size());
-                    archive = DiagnosticLogExporter.export(this, snapshot, control);
-                } catch (Throwable error) {
-                    failure = error;
-                }
-                File result = archive;
-                Throwable error = failure;
-                mainHandler.post(() -> finishDiagnosticLogExport(result, error));
-            });
-        } catch (Throwable error) {
-            finishDiagnosticLogExport(null, error);
-        }
-    }
-
-    private void finishDiagnosticLogExport(File archive, Throwable error) {
-        boolean canceled = diagnosticExportControl != null
-                && diagnosticExportControl.isCancellationRequested();
-        diagnosticExportControl = null;
-        diagnosticExportProgress = null;
-        if (canceled) {
-            if (archive != null) archive.delete();
-            archive = null;
-            error = new CompatibilityBundleExporter.CancellationException();
-        }
-        if (exportArchiveToDocument && archive != null && error == null
-                && activityResumed && !activityDestroyed && !shutdownRequested) {
-            chooseArchiveDocument(archive, false);
-            return;
-        }
-        logExportInProgress = false;
-        if (runtimeDialogOwner == RuntimeDialogOwner.LOGS) clearRuntimeDialog();
-        if (!activityDestroyed) advanceStartupAuthorizationFlow();
-        if (error != null) {
-            record("diagnostic_log_export", "state", "failed", "error", error.toString());
-            publishSettingsOperation(SettingsOperation.Logs,
-                    runtimeText(canceled ? R.string.runtime_car_compat_canceled : R.string.runtime_logs_failed),
-                    canceled ? StatusTone.Warning : StatusTone.Error, false);
-            if (activityResumed && !activityDestroyed) {
-                recordOperationFeedback(runtimeText(canceled
-                        ? R.string.runtime_car_compat_canceled : R.string.runtime_logs_failed));
-            }
-            return;
-        }
-        if (archive == null) {
-            publishSettingsOperation(SettingsOperation.Logs,
-                    runtimeText(R.string.runtime_logs_empty), StatusTone.Warning, false);
-            return;
-        }
-        if (!activityResumed || activityDestroyed) {
-            boolean deleted = archive.delete();
-            record("diagnostic_log_export", "state", "chooser_skipped",
-                    "reason", "activity_inactive", "archive_deleted", deleted);
-            publishSettingsOperation(SettingsOperation.Logs,
-                    runtimeText(R.string.runtime_logs_inactive), StatusTone.Warning, false);
-            return;
-        }
-        publishSettingsOperation(SettingsOperation.Logs,
-                runtimeText(R.string.runtime_logs_ready), StatusTone.Ok, false);
-        try {
-            Uri uri = FileProvider.getUriForFile(
-                    this, getPackageName() + ".fileprovider", archive);
-            Intent share = new Intent(Intent.ACTION_SEND)
-                    .setType("application/zip")
-                    .putExtra(Intent.EXTRA_STREAM, uri);
-            share.setClipData(ClipData.newUri(
-                    getContentResolver(), "BYD Extend logs", uri));
-            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            record("diagnostic_log_export", "state", "chooser_opened",
-                    "archive", archive.getName(), "bytes", archive.length());
-            startActivity(Intent.createChooser(share, runtimeText(R.string.runtime_logs_share_title)));
-        } catch (Throwable shareError) {
-            record("diagnostic_log_export", "state", "share_failed",
-                    "error", shareError.toString());
-            publishSettingsOperation(SettingsOperation.Logs,
-                    runtimeText(R.string.runtime_share_menu_failed), StatusTone.Error, false);
-            recordOperationFeedback(runtimeText(R.string.runtime_share_menu_failed));
-        }
     }
 
     private void restoreArchiveDocumentState(Bundle state) {
@@ -2573,7 +2445,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 android.provider.Settings.canDrawOverlays(this))) reason = "overlay_permission";
         else if (settingsTransferInProgress || settingsReloadPending || legacyImportOfferDialog != null
                 || settingsTransferDialog != null) reason = "settings_transfer";
-        else if (logExportInProgress || compatibilityExportInProgress) reason = "export_in_progress";
+        else if (logShareBlocksUi() || compatibilityExportInProgress) reason = "export_in_progress";
         else if (productionUi == null || !replacingUpdateDialog
                 && productionUi.getState().getDialog() != null) reason = "another_dialog";
         if (reason != null) UpdateHintRuntime.get(this).offerDecision(reason);
@@ -2778,7 +2650,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void confirmCompatibilityBundleExport(boolean saveAs) {
-        if (logExportInProgress || compatibilityExportInProgress
+        if (logShareBlocksUi() || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         showRuntimeDialog(RuntimeDialogOwner.COMPATIBILITY, DialogKind.Message,
                 runtimeText(saveAs ? R.string.runtime_archive_save_title : R.string.runtime_car_compat_title),
@@ -2788,7 +2660,7 @@ public final class CameraProbeActivity extends ComponentActivity
     }
 
     private void startCompatibilityBundleExport(boolean saveAs) {
-        if (logExportInProgress || compatibilityExportInProgress
+        if (logShareBlocksUi() || compatibilityExportInProgress
                 || shutdownRequested || activityDestroyed) return;
         compatibilityExportInProgress = true;
         exportArchiveToDocument = saveAs;
@@ -3910,7 +3782,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 || adbAuthPending || adbAuthorizationStartScheduled
                 || startupOverlayPermissionFlow.foregroundAuthorizationInFlight()
                 || settingsTransferInProgress || settingsReloadPending
-                || logExportInProgress || compatibilityExportInProgress || updateDownloadInFlight
+                || logShareBlocksUi() || compatibilityExportInProgress || updateDownloadInFlight
                 || settingsTransferDialog != null || legacyImportOfferDialog != null
                 || productionUi != null && productionUi.getState().getDialog() != null
                 || !startupOverlayPermissionFlow.foregroundAuthorizationFinished();
@@ -7914,7 +7786,7 @@ public final class CameraProbeActivity extends ComponentActivity
             return false;
         }
         if (settingsTransferInProgress || settingsReloadPending
-                || logExportInProgress || compatibilityExportInProgress) return false;
+                || logShareBlocksUi() || compatibilityExportInProgress) return false;
         weatherEnableRequestedForPermission |= enableWeather;
         weatherRefreshAfterPermission |= refreshAfter;
         cancelPendingWeatherLocationPermission();
@@ -9487,7 +9359,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
 
     void clearCaptureLogs() {
-        if (logExportInProgress || compatibilityExportInProgress || activityDestroyed) return;
+        if (logShareBlocksUi() || compatibilityExportInProgress || activityDestroyed) return;
         String clearing = runtimeText(R.string.runtime_logs_clearing);
         publishSettingsOperation(SettingsOperation.Logs,
                 clearing, StatusTone.Warning, true);
@@ -11461,7 +11333,7 @@ public final class CameraProbeActivity extends ComponentActivity
                 || !startupOverlayPermissionFlow.canPresentStartupDialogs(
                         android.provider.Settings.canDrawOverlays(this))
                 || settingsTransferInProgress || settingsReloadPending
-                || logExportInProgress || compatibilityExportInProgress
+                || logShareBlocksUi() || compatibilityExportInProgress
                 || updateDownloadInFlight
                 || productionUi != null && productionUi.getState().getDialog() != null
                 || settingsTransferDialog != null || legacyImportOfferDialog != null

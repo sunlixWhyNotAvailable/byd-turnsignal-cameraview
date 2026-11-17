@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="log_share_save_as">Зберегти як…</string>
+    <string name="log_share_title">Поділитись діагностичними журналами</string>
+    <string name="log_share_selection">Усі збережені журнали</string>
+    <string name="log_share_archive_hint">Збережені журнали буде зібрано в один ZIP-архів.</string>
+    <string name="log_share_sensitive">Архів може містити відомості про авто й прошивку, діагностику камер і служб, назви застосунків та дані мережі. Передавайте його лише тим, кому довіряєте.</string>
+    <string name="log_share_sentry_notice">Надсилання розробнику використовує сервіс Sentry. Стиснений ZIP має бути меншим за 39 МБ.</string>
+    <string name="log_share_save_hint">«Зберегти як…» зберігає ZIP у вибрану теку або на USB.</string>
+    <string name="log_share_developer">Надіслати розробнику</string>
+    <string name="log_share_other_app">Інший застосунок</string>
+    <string name="log_share_cooldown">%1$d с</string>
+    <string name="log_share_comment_title">Коментар до логів</string>
+    <string name="log_share_comment_hint">Необов’язково: що сталося й коли?</string>
+    <string name="log_share_ok">Ок</string>
+    <string name="log_share_upload_title">Надсилання логів</string>
+    <string name="log_share_waiting">Очікування завершення запису</string>
+    <string name="log_share_copying">Копіювання файлів</string>
+    <string name="log_share_archiving">Створення ZIP</string>
+    <string name="log_share_uploading">Надсилання розробнику</string>
+    <string name="log_share_success">Логи надіслано</string>
+    <string name="log_share_oversized">Перевищено розмір ZIP</string>
+    <string name="log_share_cancelled">Скасовано</string>
+    <string name="log_share_shared">Відкрито вибір застосунку</string>
+    <string name="log_share_card_summary">ZIP: %1$s МБ · %2$d с</string>
+    <string name="log_share_details">Деталі</string>
+    <string name="log_share_limit_title">Перевищено розмір архіву для надсилання через Sentry</string>
+    <string name="log_share_limit_body">ZIP: %1$d МБ. Для Sentry — менше 39 МБ. Цей самий архів можна передати через інший застосунок.</string>
+    <string name="log_share_close_hint">Закриття картки не зупиняє надсилання. Зупинити можна лише підготовку архіву.</string>
+    <string name="log_share_no_adb">Без ADB надсилаються лише доступні журнали застосунку. Системних журналів у звіті не буде.</string>
+    <string name="log_share_unconfirmed">Доставку не підтверджено</string>
+    <string name="log_share_failed">Не вдалося надіслати журнали</string>
+    <string name="log_share_ready">Архів готовий</string>
+    <string name="log_share_saved">Архів збережено</string>
+    <string name="log_share_stop">Зупинити</string>
+</resources>

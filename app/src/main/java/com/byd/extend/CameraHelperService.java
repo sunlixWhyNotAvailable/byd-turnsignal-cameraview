@@ -897,6 +897,15 @@ public final class CameraHelperService extends Service {
                 .putExtra(EXTRA_FLUSH_RECEIVER, receiver));
     }
 
+    private static volatile CameraHelperService logShareInstance;
+
+    /** Export must not start camera/vehicle runtimes just to flush existing app journals. */
+    static void flushExistingLogs(Runnable finished) {
+        CameraHelperService current = logShareInstance;
+        if (current == null || current.serviceLog == null) { finished.run(); return; }
+        current.serviceLog.flush(finished);
+    }
+
     private void initializeControllers() {
         SharedPreferences settings = getSharedPreferences("settings", MODE_PRIVATE);
         BlindSpotOverlayController.migrateOverlayPreferences(settings);
@@ -919,6 +928,7 @@ public final class CameraHelperService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        logShareInstance = this;
         serviceInstanceId = Process.myPid() + "-" + SERVICE_INSTANCE_SEQUENCE.incrementAndGet();
         runtimeThread = new HandlerThread("service-runtime");
         runtimeThread.start();
@@ -1744,6 +1754,7 @@ public final class CameraHelperService extends Service {
 
     @Override
     public void onDestroy() {
+        if (logShareInstance == this) logShareInstance = null;
         recordServiceDiagnostic("service_destroy_callback", -1, foreground, foreground,
                 "action", "onDestroy", "reason", "service_destroy",
                 "operation", "service_lifecycle", "phase", "entry");

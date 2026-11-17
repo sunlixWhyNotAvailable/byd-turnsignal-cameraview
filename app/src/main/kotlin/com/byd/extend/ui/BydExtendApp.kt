@@ -227,6 +227,7 @@ fun BydExtendApp(
                 BottomNavigation(state.activeTab, strings, colors) { dispatchAction(BydExtendUiAction.Navigate(it)) }
             }
             state.dialog?.let { AppDialog(it, strings, colors, dispatchAction) }
+            LogShareUi(colors, strings)
         }
     }
 }

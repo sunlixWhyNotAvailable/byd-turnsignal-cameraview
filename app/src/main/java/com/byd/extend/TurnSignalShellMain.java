@@ -99,6 +99,7 @@ public final class TurnSignalShellMain {
     }
 
     static final class ShellBinder extends Binder {
+        private LogShareShellHost logShareHost;
         private static final String AWAKE_SESSION_PATH =
                 "/data/local/tmp/bydextend_awake_session";
         private static final long RECOVERY_DEATH_SETTLE_MS = 500;
@@ -246,6 +247,14 @@ public final class TurnSignalShellMain {
             }
             try {
                 data.enforceInterface(TurnSignalShellProtocol.DESCRIPTOR);
+                if (code == TurnSignalShellProtocol.TX_LOG_SHARE) {
+                    synchronized (this) {
+                        if (logShareHost == null) logShareHost = new LogShareShellHost(appUid,
+                                completion -> flushDiagnostics(() -> DiagnosticLogPolicy.flushOutput(completion)));
+                    }
+                    logShareHost.transact(data, reply);
+                    return true;
+                }
                 if (code == TurnSignalShellProtocol.TX_READ_CAMERA_RENDERER_MARKER) {
                     if (data.dataAvail() != 0) throw new IllegalArgumentException("marker request takes no arguments");
                     String marker = readCameraRendererMarker();

@@ -47,6 +47,7 @@ android {
             "\"https://api.github.com/repos/sunlixWhyNotAvailable/byd-turnsignal-cameraview/releases/latest\""
         )
         buildConfigField("String", "UPDATE_USER_AGENT", "\"BYD-Extend-UpdateCheck\"")
+        buildConfigField("String", "SENTRY_DSN", "\"https://b62d050b9a4af98654fec05ba29a6c08@o4511845885149184.ingest.de.sentry.io/4512447681069136\"")
     }
 
     compileOptions {
@@ -76,6 +77,7 @@ kotlin {
 }
 
 dependencies {
+    implementation("io.sentry:sentry-android-core:8.43.0")
     implementation("com.android.tools.smali:smali-dexlib2:3.0.9")
     implementation(platform("androidx.compose:compose-bom:2024.10.00"))
     implementation("androidx.activity:activity-compose:1.9.3")

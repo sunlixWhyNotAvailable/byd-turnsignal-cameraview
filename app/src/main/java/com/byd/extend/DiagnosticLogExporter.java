@@ -36,6 +36,8 @@ final class DiagnosticLogExporter {
     private static final String MANIFEST_ENTRY = "manifest.json";
 
     private static final CollectorSpec[] SYSTEM_COLLECTORS = {
+            new CollectorSpec("system/log-share-diagnostics.jsonl",
+                    "cat /data/local/tmp/bydextend-log-share-*/*/diagnostic.jsonl | tail -c 1048576"),
             new CollectorSpec(
                     "system/bydextend_helper.log",
                     "tail -c 1048576 /data/local/tmp/bydextend_helper.log 2>/dev/null"),
@@ -114,6 +116,8 @@ final class DiagnosticLogExporter {
         if (external != null) searchDirectories.add(new File(external, "captures"));
         searchDirectories.add(new File(files, "captures"));
         searchDirectories.add(files);
+        File[] operations = new File(files, "log_share").listFiles(File::isDirectory);
+        if (operations != null) Collections.addAll(searchDirectories, operations);
         return snapshot(searchDirectories.toArray(new File[0]));
     }
 
@@ -144,8 +148,21 @@ final class DiagnosticLogExporter {
 
     static File export(Context context, Snapshot snapshot,
             CompatibilityBundleExporter.ExportControl control) throws IOException {
-        Identity identity = new Identity(
-                context.getPackageName(),
+        return export(context.getCacheDir(), snapshot, deviceIdentity(),
+                command -> fromAdbResult(LocalAdbClient.executeAuthorizedText(
+                        context, command, 16L * 1024 * 1024, 5_000, control, (kind, fields) -> {})),
+                (command, output) -> fromAdbResult(
+                        LocalAdbClient.executeAuthorizedStreaming(
+                                context, "extend_dropbox_binary_export".equals(command)
+                                        ? DropBoxTombstoneCollector.command(context.getApplicationInfo().sourceDir)
+                                        : command, output, Long.MAX_VALUE, 5_000, control,
+                                (kind, fields) -> {})),
+                System.currentTimeMillis(), control);
+    }
+
+    static Identity deviceIdentity() {
+        return new Identity(
+                BuildConfig.APPLICATION_ID,
                 BuildConfig.VERSION_NAME,
                 BuildConfig.VERSION_CODE,
                 Build.MANUFACTURER,
@@ -158,19 +175,6 @@ final class DiagnosticLogExporter {
                 Build.HARDWARE,
                 joinAbis(Build.SUPPORTED_ABIS),
                 Build.VERSION.SDK_INT);
-        return export(
-                context.getCacheDir(),
-                snapshot,
-                identity,
-                command -> fromAdbResult(LocalAdbClient.executeAuthorizedText(
-                        context, command, 16L * 1024 * 1024, 5_000, control, (kind, fields) -> {})),
-                (command, output) -> fromAdbResult(
-                        LocalAdbClient.executeAuthorizedStreaming(
-                                context, "extend_dropbox_binary_export".equals(command)
-                                        ? DropBoxTombstoneCollector.command(context.getApplicationInfo().sourceDir)
-                                        : command, output, Long.MAX_VALUE, 5_000, control,
-                                (kind, fields) -> {})),
-                System.currentTimeMillis(), control);
     }
 
     static File export(
@@ -224,7 +228,7 @@ final class DiagnosticLogExporter {
             if (!partial.renameTo(finished)) {
                 throw new IOException("Unable to finish diagnostic archive atomically");
             }
-            deleteOlderArchives(outputDirectory, finished);
+            // The sharing operation owns retention; another export may still be reading its ZIP.
             progress.reporter.report(CompatibilityBundleExporter.Progress.Phase.COMPLETE,
                     "", 0, 0, progress.bytes, progress.bytes, true);
             return finished;
@@ -245,6 +249,10 @@ final class DiagnosticLogExporter {
     /** App-owned files are copied before any optional ADB collector is attempted. */
     static void writeAppLogs(ZipOutputStream zip, Snapshot snapshot,
             List<SourceRecord> records, ProgressTracker progress) throws IOException {
+        if (snapshot.archive != null) {
+            copyAppSnapshot(zip, snapshot.archive, records, progress);
+            return;
+        }
         Set<String> usedNames = new HashSet<>();
         for (Source source : snapshot.sources) {
             String entry = uniqueLogEntry(source.file.getName(), usedNames);
@@ -288,6 +296,13 @@ final class DiagnosticLogExporter {
             writeAppLogs(zip, snapshot, records, progress);
 
             for (CollectorSpec collector : SYSTEM_COLLECTORS) {
+                if (commandRunner == null) {
+                    SourceRecord missing = new SourceRecord("system", collector.entry, collector.entry, -1);
+                    missing.status = "unavailable";
+                    missing.error = "adb_not_available";
+                    records.add(missing);
+                    continue;
+                }
                 long bound = -1;
                 String command = collector.command;
                 progress.stage(collector.entry, -1);
@@ -484,6 +499,7 @@ final class DiagnosticLogExporter {
         String name = file.getName();
         return name.endsWith(".jsonl")
                 && (name.startsWith("guard-camera-") || name.startsWith("helper-service-")
+                    || name.equals("diagnostic.jsonl")
                     || name.equals(CellularRecoveryDiagnostics.FILE_NAME)
                     || name.equals("avas-recovery-journal.jsonl")
                     || name.equals("avas-recovery-journal.1.jsonl"));
@@ -497,14 +513,6 @@ final class DiagnosticLogExporter {
             candidate = "logs/" + suffix++ + "-" + fileName;
         } while (!usedNames.add(candidate));
         return candidate;
-    }
-
-    private static void deleteOlderArchives(File directory, File current) {
-        File[] files = directory.listFiles(file -> file.isFile()
-                && file.getName().startsWith("byd-extend-diagnostics-")
-                && file.getName().endsWith(".zip") && !file.equals(current));
-        if (files == null) return;
-        for (File file : files) file.delete();
     }
 
     private static void safelyCloseEntry(ZipOutputStream zip) {
@@ -522,9 +530,61 @@ final class DiagnosticLogExporter {
 
     static final class Snapshot {
         final List<Source> sources;
+        final File archive;
 
         Snapshot(List<Source> sources) {
             this.sources = Collections.unmodifiableList(new ArrayList<>(sources));
+            archive = null;
+        }
+
+        Snapshot(File archive) {
+            this.archive = archive;
+            sources = Collections.emptyList();
+        }
+    }
+
+    // An app-owned snapshot crosses the UID boundary as one read-only ZIP descriptor.
+    private static void copyAppSnapshot(ZipOutputStream output, File archive,
+            List<SourceRecord> records, ProgressTracker progress) throws IOException {
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(archive)) {
+            ZipEntry manifest = zip.getEntry(MANIFEST_ENTRY);
+            if (manifest == null) throw new IOException("Snapshot manifest missing");
+            org.json.JSONArray sources;
+            try (java.io.InputStream in = zip.getInputStream(manifest)) {
+                java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                LogShareFiles.copy(in, bytes);
+                sources = new JSONObject(new String(bytes.toByteArray(), StandardCharsets.UTF_8)).getJSONArray("sources");
+            }
+            for (int i = 0; i < sources.length(); i++) {
+                JSONObject item = sources.getJSONObject(i);
+                if (!"app_jsonl".equals(item.getString("type"))) continue;
+                String entry = item.getString("entry");
+                if (!entry.startsWith("logs/") || entry.contains("..") || entry.indexOf('\\') >= 0)
+                    throw new IOException("Invalid snapshot entry");
+                SourceRecord record = new SourceRecord("app_jsonl", entry, item.getString("name"), item.getLong("snapshot_bytes"));
+                record.status = item.getString("status");
+                record.error = item.isNull("error") ? null : item.getString("error");
+                record.droppedBytes = item.getLong("dropped_tail_bytes");
+                ZipEntry source = zip.getEntry(entry);
+                if (source != null) {
+                    progress.stage(entry, -1);
+                    output.putNextEntry(new ZipEntry(entry));
+                    try (java.io.InputStream in = zip.getInputStream(source)) {
+                        byte[] buffer = new byte[BUFFER_SIZE];
+                        int read;
+                        while ((read = in.read(buffer)) != -1) {
+                            progress.check();
+                            output.write(buffer, 0, read);
+                            record.archivedBytes += read;
+                            progress.add(read);
+                        }
+                    }
+                    output.closeEntry();
+                }
+                records.add(record);
+            }
+        } catch (org.json.JSONException error) {
+            throw new IOException("Invalid app snapshot manifest", error);
         }
     }
 

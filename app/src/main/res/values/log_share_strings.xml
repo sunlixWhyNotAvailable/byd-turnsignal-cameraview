@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="log_share_save_as">Save as…</string>
+    <string name="log_share_title">Share diagnostic logs</string>
+    <string name="log_share_selection">All saved logs</string>
+    <string name="log_share_archive_hint">The saved logs will be collected into one ZIP archive.</string>
+    <string name="log_share_sensitive">The archive may contain vehicle and firmware information, camera and service diagnostics, application names and network details. Share it only with people you trust.</string>
+    <string name="log_share_sentry_notice">Sending to the developer uses Sentry. The compressed ZIP must be smaller than 39 MB.</string>
+    <string name="log_share_save_hint">“Save as…” saves the ZIP to a chosen folder or USB storage.</string>
+    <string name="log_share_developer">Send to developer</string>
+    <string name="log_share_other_app">Another app</string>
+    <string name="log_share_cooldown">%1$d s</string>
+    <string name="log_share_comment_title">Comment on the logs</string>
+    <string name="log_share_comment_hint">Optional: what happened and when?</string>
+    <string name="log_share_ok">OK</string>
+    <string name="log_share_upload_title">Log upload</string>
+    <string name="log_share_waiting">Waiting for writes</string>
+    <string name="log_share_copying">Copying files</string>
+    <string name="log_share_archiving">Creating ZIP</string>
+    <string name="log_share_uploading">Sending to developer</string>
+    <string name="log_share_success">Logs sent</string>
+    <string name="log_share_oversized">ZIP size limit exceeded</string>
+    <string name="log_share_cancelled">Cancelled</string>
+    <string name="log_share_shared">App chooser opened</string>
+    <string name="log_share_card_summary">ZIP: %1$s MB · %2$d s</string>
+    <string name="log_share_details">Details</string>
+    <string name="log_share_limit_title">Archive size limit for sending via Sentry exceeded</string>
+    <string name="log_share_limit_body">ZIP: %1$d MB. Sentry requires less than 39 MB. You can share the same archive through another app.</string>
+    <string name="log_share_close_hint">Closing the card does not stop sending. Stop is available only while preparing the archive.</string>
+    <string name="log_share_no_adb">Without ADB, only available application logs are sent. System logs are not included.</string>
+    <string name="log_share_unconfirmed">Delivery not confirmed</string>
+    <string name="log_share_failed">Could not send logs</string>
+    <string name="log_share_ready">Archive ready</string>
+    <string name="log_share_saved">Archive saved</string>
+    <string name="log_share_stop">Stop</string>
+</resources>
