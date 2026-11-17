@@ -72,11 +72,11 @@ class DistanceWidgetController internal constructor(
         try { settings = DistanceWidgetStore.read(context.settings); overlayFailure = false }
         catch (error: Exception) {
             failure("settings", error)
-            settings = DistanceWidgetSettings()
-            preview = false
-            reconcile()
+            // Reject invalid configuration without replacing the last accepted settings.
             return@dispatch
         }
+        source.setCalibration(settings.adasFrontOffsetCm, settings.adasRearOffsetCm,
+            settings.adasLeftOffsetCm, settings.adasRightOffsetCm)
         event.accept("distance_settings", arrayOf("enabled", settings.enabled, "target", settings.target.name,
             "format", settings.format.name, "zones", settings.zones.size))
         if (settings != previous) settingsDiagnostic()
@@ -296,7 +296,14 @@ class DistanceWidgetController internal constructor(
         if (!DiagnosticLogPolicy.extended()) return
         event.accept("distance_settings_detail", arrayOf("enabled", settings.enabled,
             "hidden_by_button", settings.hiddenByButton, "target", settings.target.name,
-            "format", settings.format.name, "zones", JSONArray(settings.zones.map {
+            "format", settings.format.name,
+            "adas_front_offset_cm", settings.adasFrontOffsetCm, "adas_rear_offset_cm", settings.adasRearOffsetCm,
+            "adas_left_offset_cm", settings.adasLeftOffsetCm, "adas_right_offset_cm", settings.adasRightOffsetCm,
+            "adas_front_cm", AdasDistanceModel.CENTER_X + AdasDistanceModel.LENGTH / 2 - settings.adasFrontOffsetCm,
+            "adas_rear_cm", AdasDistanceModel.CENTER_X - AdasDistanceModel.LENGTH / 2 + settings.adasRearOffsetCm,
+            "adas_left_cm", AdasDistanceModel.CENTER_Y + AdasDistanceModel.WIDTH / 2 - settings.adasLeftOffsetCm,
+            "adas_right_cm", AdasDistanceModel.CENTER_Y - AdasDistanceModel.WIDTH / 2 + settings.adasRightOffsetCm,
+            "zones", JSONArray(settings.zones.map {
                 JSONObject().put("id", it.id).put("end_cm", it.endCm).put("color_argb", it.color)
             })))
     }

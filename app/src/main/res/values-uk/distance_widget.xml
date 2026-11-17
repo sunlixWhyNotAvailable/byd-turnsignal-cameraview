@@ -46,4 +46,13 @@
 <string name="distance_button_hidden">Віджет дистанції приховано</string>
 <string name="distance_button_restored">Показ віджета дистанції відновлено</string>
 <string name="distance_button_waiting">Показ віджета дистанції дозволено. Очікування умов показу.</string>
+<string name="distance_calibration_hint">"Стосується лише ADAS. Покази парктроніків не змінюються."</string>
+<string name="distance_calibration_front">"Перед"</string>
+<string name="distance_calibration_rear">"Зад"</string>
+<string name="distance_calibration_left">"Ліво"</string>
+<string name="distance_calibration_right">"Право"</string>
+<string name="distance_calibration_sign_hint">"Незалежна поправка для кожного боку: + збільшує дистанцію; − зменшує."</string>
+<string name="distance_calibration_integer_error">"Введіть цілу кількість сантиметрів у кожному полі."</string>
+<string name="distance_calibration_length_error">"Сума поправок переду й заду має бути меншою за 483 см. Попереднє калібрування збережено."</string>
+<string name="distance_calibration_width_error">"Сума поправок лівого й правого боку має бути меншою за 192,5 см. Попереднє калібрування збережено."</string>
 </resources>

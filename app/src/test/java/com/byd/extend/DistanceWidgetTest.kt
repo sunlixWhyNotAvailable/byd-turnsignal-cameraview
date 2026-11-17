@@ -115,11 +115,36 @@ class DistanceWidgetTest {
         assertEquals(500f/620,small.width/small.height,.0001f)
     }
 
+    @Test fun legacyCalibrationDefaultsAndInvalidImportPreserveStoredSettings() {
+        val chosen=DistanceWidgetSettings(adasFrontOffsetCm=250,adasRearOffsetCm=-40,
+            adasLeftOffsetCm=-35,adasRightOffsetCm=12)
+        DistanceWidgetStore.save(context,chosen)
+        val keys=listOf("adasFrontOffsetCm","adasRearOffsetCm","adasLeftOffsetCm","adasRightOffsetCm")
+        val legacy=JSONObject(chosen.encode()).apply {
+            keys.forEach { remove(it) }; put("adasForwardCm",250); put("adasLeftCm",-35)
+        }
+        assertEquals(chosen.copy(adasFrontOffsetCm=0,adasRearOffsetCm=0,adasLeftOffsetCm=0,adasRightOffsetCm=0),
+            DistanceWidgetSettings.decode(legacy.toString()))
+        for (bad in listOf<Any>(1.5,"10",JSONObject.NULL,2147483648L)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                DistanceWidgetSettings.decode(JSONObject(chosen.encode()).put(keys.first(),bad).toString())
+            }
+        }
+        val exported=JSONObject(CameraSettingsTransfer.exportCameraPreset(context,prefs))
+        val invalid=JSONObject(chosen.encode()).put("adasRearOffsetCm",233).toString()
+        exported.getJSONObject("settings").put(DistanceWidgetStore.CONFIG,invalid)
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraSettingsTransfer.applyCameraPreset(prefs,CameraSettingsTransfer.parseCameraPreset(exported.toString()))
+        }
+        assertEquals(chosen,DistanceWidgetStore.read(prefs))
+    }
+
     @Test fun presetLoadResetAndHelperReattachPreserveManualVisibility() {
         prefs.edit().putBoolean(DistanceWidgetStore.ENABLED,true).putBoolean(DistanceWidgetStore.HIDDEN,true).commit()
         val chosen=DistanceWidgetStore.read(prefs).copy(carModel="sk2",carColor="red",
             tablet=DistanceWidgetProfile(sizePercent=35,x=25f,backgroundPercent=70),
-            cluster=DistanceWidgetProfile(sizePercent=60,y=75f,backgroundPercent=85))
+            cluster=DistanceWidgetProfile(sizePercent=60,y=75f,backgroundPercent=85),
+            adasFrontOffsetCm=200,adasRearOffsetCm=-20,adasLeftOffsetCm=-15,adasRightOffsetCm=35)
         DistanceWidgetStore.save(context,chosen)
         CameraButtonBindings.save(prefs,CameraButtonBindings.Action.DistanceVisibility,
             CameraButtonBindings.Binding(305,CameraButtonBindings.Press.Double))
@@ -129,6 +154,10 @@ class DistanceWidgetTest {
         assertEquals(DistanceWidgetSettings().tablet,DistanceWidgetStore.read(prefs).tablet)
         assertEquals(80,DistanceWidgetStore.read(prefs).tablet.backgroundPercent)
         assertEquals(100,DistanceWidgetStore.read(prefs).cluster.backgroundPercent)
+        assertEquals(0,DistanceWidgetStore.read(prefs).adasFrontOffsetCm)
+        assertEquals(0,DistanceWidgetStore.read(prefs).adasRearOffsetCm)
+        assertEquals(0,DistanceWidgetStore.read(prefs).adasLeftOffsetCm)
+        assertEquals(0,DistanceWidgetStore.read(prefs).adasRightOffsetCm)
         assertTrue(DistanceWidgetStore.read(prefs).hiddenByButton)
         assertTrue(prefs.contains(DistanceWidgetStore.PRESET))
         val button=CameraButtonBindings.load(prefs,CameraButtonBindings.Action.DistanceVisibility)
@@ -136,6 +165,7 @@ class DistanceWidgetTest {
         CameraButtonBindings.reset(prefs,CameraButtonBindings.Action.DistanceVisibility)
         DistanceWidgetStore.applyPreset(context,false)
         val reopened=DistanceWidgetStore.read(context.getSharedPreferences("settings",0))
+        assertEquals(chosen,reopened)
         assertEquals(chosen.tablet,reopened.tablet); assertEquals(chosen.cluster,reopened.cluster)
         assertEquals(CameraButtonBindings.UNASSIGNED,
             CameraButtonBindings.load(prefs,CameraButtonBindings.Action.DistanceVisibility).keyCode)
@@ -145,11 +175,13 @@ class DistanceWidgetTest {
         helper.edit().putBoolean(DistanceWidgetStore.HIDDEN,false).apply()
         helper.reconcile(prefs.all,false)
         assertFalse(DistanceWidgetStore.read(helper).hiddenByButton)
+        assertEquals(chosen.copy(hiddenByButton=false),DistanceWidgetStore.read(helper))
     }
 
     @Test fun currentPresetExportsBothProfilesAndOldImportsKeepNewSettings() {
         val chosen=DistanceWidgetSettings(carModel="sk24",carColor="black",
-            tablet=DistanceWidgetProfile(backgroundPercent=70),cluster=DistanceWidgetProfile(x=80f,backgroundPercent=85))
+            tablet=DistanceWidgetProfile(backgroundPercent=70),cluster=DistanceWidgetProfile(x=80f,backgroundPercent=85),
+            adasFrontOffsetCm=250,adasRearOffsetCm=-40,adasLeftOffsetCm=-35,adasRightOffsetCm=12)
         DistanceWidgetStore.save(context,chosen); DistanceWidgetStore.savePreset(prefs)
         prefs.edit().putBoolean(DistanceWidgetStore.HIDDEN,true).commit()
         val distanceButton=CameraButtonBindings.Action.DistanceVisibility

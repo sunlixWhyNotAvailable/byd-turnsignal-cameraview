@@ -9,10 +9,47 @@ public final class AdasDistanceModel {
     public static final double LENGTH = 483, WIDTH = 192.5, CENTER_X = 156.25, CENTER_Y = -.75;
     public static final int DIRECTIONS = 8;
     // Clockwise: front, front-right, right, rear-right, rear, rear-left, left, front-left.
-    private static final double[][][] PATCHES = createPatches();
+    public static final Calibration ZERO = new Calibration(0, 0, 0, 0);
     private static final double[] CONTOUR_BOUNDS = createContourBounds();
     private static final double EPSILON = 1e-7;
     private static final double[][] EMPTY = new double[0][];
+
+    /** Independent inward side offsets; the OEM object coordinates remain untouched. */
+    public static final class Calibration {
+        public final int frontCm, rearCm, leftCm, rightCm;
+        public final double front, rear, left, right;
+        private final double centerX, centerY, length, width;
+        private final boolean identity;
+        private final double[][][] patches;
+
+        public Calibration(int frontCm, int rearCm, int leftCm, int rightCm) {
+            validate(frontCm, rearCm, leftCm, rightCm);
+            this.frontCm=frontCm; this.rearCm=rearCm; this.leftCm=leftCm; this.rightCm=rightCm;
+            front=CENTER_X+LENGTH/2-frontCm; rear=CENTER_X-LENGTH/2+rearCm;
+            left=CENTER_Y+WIDTH/2-leftCm; right=CENTER_Y-WIDTH/2+rightCm;
+            centerX=(front+rear)/2; centerY=(left+right)/2;
+            length=front-rear; width=left-right;
+            identity=frontCm==0 && rearCm==0 && leftCm==0 && rightCm==0;
+            patches=createPatches(front,rear,left,right);
+        }
+        public static void validate(int front, int rear, int left, int right) {
+            if ((double)front+rear >= LENGTH)
+                throw new IllegalArgumentException("ADAS front + rear correction must be less than " + LENGTH + " cm");
+            if ((double)left+right >= WIDTH)
+                throw new IllegalArgumentException("ADAS left + right correction must be less than " + WIDTH + " cm");
+        }
+        public boolean matches(int front, int rear, int left, int right) {
+            return frontCm==front && rearCm==rear && leftCm==left && rightCm==right;
+        }
+        private void include(double[] coverage, int sector, double x, double y) {
+            // Normalize coverage back to the fixed drawing contour, including radar joins.
+            if (!identity) {
+                x=CENTER_X+(x-centerX)*LENGTH/length;
+                y=CENTER_Y+(y-centerY)*WIDTH/width;
+            }
+            AdasDistanceModel.include(coverage,sector,x,y);
+        }
+    }
 
     public static final class Obstacle {
         public final Integer id, type;
@@ -48,6 +85,10 @@ public final class AdasDistanceModel {
     }
 
     public static Result evaluate(List<Obstacle> objects) {
+        return evaluate(objects, ZERO);
+    }
+
+    public static Result evaluate(List<Obstacle> objects, Calibration calibration) {
         double[] result = new double[DIRECTIONS];
         Arrays.fill(result, Double.NaN);
         List<DistanceObject> measured = new ArrayList<>(objects.size());
@@ -58,15 +99,15 @@ public final class AdasDistanceModel {
             Arrays.fill(coverage, Double.NaN);
             for (int i = 0; i < DIRECTIONS; i++) {
                 distance[i] = Double.POSITIVE_INFINITY;
-                for (double[] segment : PATCHES[i]) {
+                for (double[] segment : calibration.patches[i]) {
                     double[][] covered;
                     if (segment[0] == segment[2]) {
-                        boolean front = segment[0] > CENTER_X;
+                        boolean front = segment[0] > calibration.centerX;
                         covered = clip(box, 0, segment[0], front);
                         covered = clip(covered, 1, Math.min(segment[1], segment[3]), true);
                         covered = clip(covered, 1, Math.max(segment[1], segment[3]), false);
                     } else {
-                        boolean left = segment[1] > CENTER_Y;
+                        boolean left = segment[1] > calibration.centerY;
                         covered = clip(box, 1, segment[1], left);
                         covered = clip(covered, 0, Math.min(segment[0], segment[2]), true);
                         covered = clip(covered, 0, Math.max(segment[0], segment[2]), false);
@@ -76,17 +117,17 @@ public final class AdasDistanceModel {
                         // Project only the covered tangent range onto this physical body segment.
                         double x=segment[0]==segment[2] ? segment[0] : p[0];
                         double y=segment[1]==segment[3] ? segment[1] : p[1];
-                        include(coverage,i,x,y);
+                        calibration.include(coverage,i,x,y);
                     }
                 }
                 // Corner sectors also cover the quadrant outside both sides of the car.
                 if ((i & 1) != 0) {
                     boolean front = i == 1 || i == 7, left = i == 5 || i == 7;
-                    double x = CENTER_X + (front ? LENGTH / 2 : -LENGTH / 2);
-                    double y = CENTER_Y + (left ? WIDTH / 2 : -WIDTH / 2);
+                    double x = front ? calibration.front : calibration.rear;
+                    double y = left ? calibration.left : calibration.right;
                     double[][] covered = clip(clip(box, 0, x, front), 1, y, left);
                     distance[i] = Math.min(distance[i], clearance(covered, new double[]{x,y,x,y}));
-                    if (covered.length != 0) include(coverage,i,x,y);
+                    if (covered.length != 0) calibration.include(coverage,i,x,y);
                 }
             }
             for (int i = 0; i < DIRECTIONS; i++) {
@@ -116,7 +157,7 @@ public final class AdasDistanceModel {
         double[] result = new double[DIRECTIONS * 2];
         Arrays.fill(result, Double.NaN);
         for (int sector = 0; sector < DIRECTIONS; sector++) {
-            for (double[] segment : PATCHES[sector]) {
+            for (double[] segment : ZERO.patches[sector]) {
                 include(result, sector, segment[0], segment[1]);
                 include(result, sector, segment[2], segment[3]);
             }
@@ -145,9 +186,8 @@ public final class AdasDistanceModel {
         return result.toArray(new double[0][]);
     }
 
-    private static double[][][] createPatches() {
-        double f=CENTER_X+LENGTH/2, b=CENTER_X-LENGTH/2, l=CENTER_Y+WIDTH/2, r=CENTER_Y-WIDTH/2;
-        double fq=CENTER_X+LENGTH/4, bq=CENTER_X-LENGTH/4, lq=CENTER_Y+WIDTH/4, rq=CENTER_Y-WIDTH/4;
+    private static double[][][] createPatches(double f, double b, double l, double r) {
+        double fq=(3*f+b)/4, bq=(f+3*b)/4, lq=(3*l+r)/4, rq=(l+3*r)/4;
         return new double[][][] {
             {{f,rq,f,lq}}, {{f,r,f,rq},{fq,r,f,r}}, {{bq,r,fq,r}},
             {{b,r,b,rq},{b,r,bq,r}}, {{b,rq,b,lq}}, {{b,lq,b,l},{b,l,bq,l}},

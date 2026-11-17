@@ -46,4 +46,13 @@
 <string name="distance_button_hidden">Distance widget hidden</string>
 <string name="distance_button_restored">Distance widget display restored</string>
 <string name="distance_button_waiting">Distance widget display is enabled. Waiting for display conditions.</string>
+<string name="distance_calibration_hint">"Applies only to ADAS. Parking sensor readings stay unchanged."</string>
+<string name="distance_calibration_front">"Front"</string>
+<string name="distance_calibration_rear">"Rear"</string>
+<string name="distance_calibration_left">"Left"</string>
+<string name="distance_calibration_right">"Right"</string>
+<string name="distance_calibration_sign_hint">"Independent correction for each side: + increases the distance; − decreases it."</string>
+<string name="distance_calibration_integer_error">"Enter a whole number of centimetres in each field."</string>
+<string name="distance_calibration_length_error">"Front + rear correction must be less than 483 cm. Previous calibration has been kept."</string>
+<string name="distance_calibration_width_error">"Left + right correction must be less than 192.5 cm. Previous calibration has been kept."</string>
 </resources>

@@ -45,4 +45,13 @@
 <string name="distance_button_hidden">距离小组件已隐藏</string>
 <string name="distance_button_restored">已恢复距离小组件显示</string>
 <string name="distance_button_waiting">已允许显示距离小组件，正在等待显示条件。</string>
+<string name="distance_calibration_hint">"仅适用于 ADAS。泊车雷达读数保持不变。"</string>
+<string name="distance_calibration_front">"前方"</string>
+<string name="distance_calibration_rear">"后方"</string>
+<string name="distance_calibration_left">"左侧"</string>
+<string name="distance_calibration_right">"右侧"</string>
+<string name="distance_calibration_sign_hint">"各侧独立校正：+ 增大距离；− 减小距离。"</string>
+<string name="distance_calibration_integer_error">"请在每个输入框中输入整数厘米数。"</string>
+<string name="distance_calibration_length_error">"前后校正值之和必须小于 483 厘米。已保留原校准设置。"</string>
+<string name="distance_calibration_width_error">"左右校正值之和必须小于 192.5 厘米。已保留原校准设置。"</string>
 </resources>

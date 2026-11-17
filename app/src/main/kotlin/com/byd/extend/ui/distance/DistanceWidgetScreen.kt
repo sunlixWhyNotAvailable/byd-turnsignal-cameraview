@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Delete
 import com.byd.extend.ui.icons.Palette
 import com.byd.extend.ui.icons.DirectionsCar
 import com.byd.extend.ui.icons.OpenInFull
+import com.byd.extend.ui.icons.Tune
 import androidx.compose.material3.Text
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.runtime.*
@@ -46,6 +47,7 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.semantics.contentDescription
@@ -102,6 +104,7 @@ internal fun DistanceWidgetScreen(
     var adding by rememberSaveable { mutableStateOf(false) }
     var choosingCar by rememberSaveable { mutableStateOf(false) }
     var positioning by rememberSaveable { mutableStateOf(false) }
+    var calibrating by rememberSaveable { mutableStateOf(false) }
     val textMeasurer = rememberTextMeasurer()
     val labelStyle = LocalTextStyle.current.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     val sliderLabelWidth = with(LocalDensity.current) {
@@ -141,6 +144,8 @@ internal fun DistanceWidgetScreen(
                                 DistanceActionButton(strings.distanceText(R.string.distance_car_choose) + " · " + car.model.uppercase() +
                                     " · " + strings.distanceText(car.colorLabel), Icons.Outlined.DirectionsCar, palette,
                                     Modifier.weight(1f), maxLines = 2) { choosingCar = true }
+                                DistanceActionButton(strings.distanceText(R.string.calibration), Icons.Outlined.Tune, palette,
+                                    Modifier.weight(1f), maxLines = 2) { calibrating = true }
                             }
                         }
                         row("display-format") {
@@ -281,6 +286,69 @@ internal fun DistanceWidgetScreen(
     })
     if (positioning) DistancePositionDialog(settings, cornerRadius, palette, strings, onDismiss = { positioning = false },
         onApply = { update(settings.withProfile(it), true); positioning = false })
+    if (calibrating) DistanceCalibrationDialog(settings, palette, strings, onDismiss = { calibrating = false },
+        onApply = { front, rear, left, right ->
+            update(settings.copy(adasFrontOffsetCm = front, adasRearOffsetCm = rear,
+                adasLeftOffsetCm = left, adasRightOffsetCm = right), true)
+            calibrating = false
+        })
+}
+
+@Composable
+private fun DistanceCalibrationDialog(
+    settings: DistanceWidgetSettings, palette: UiPalette, strings: UiStrings,
+    onDismiss: () -> Unit, onApply: (Int, Int, Int, Int) -> Unit,
+) {
+    var drafts by rememberSaveable { mutableStateOf(arrayListOf(settings.adasFrontOffsetCm.toString(),
+        settings.adasRearOffsetCm.toString(), settings.adasLeftOffsetCm.toString(), settings.adasRightOffsetCm.toString())) }
+    var resetKey by rememberSaveable { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val focus = LocalFocusManager.current
+        Column(Modifier.widthIn(max = 620.dp).fillMaxWidth(.92f).heightIn(max = 520.dp)
+            .clip(RoundedCornerShape(10.dp)).background(palette.surface)
+            .border(1.dp, palette.border, RoundedCornerShape(10.dp))
+            .verticalScroll(rememberScrollState()).padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(strings.distanceText(R.string.calibration), color = palette.text,
+                fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.distanceText(R.string.distance_calibration_hint), color = palette.muted, fontSize = 13.sp)
+            Text(strings.distanceText(R.string.distance_calibration_sign_hint), color = palette.muted, fontSize = 13.sp)
+            listOf(R.string.distance_calibration_front, R.string.distance_calibration_rear,
+                R.string.distance_calibration_left, R.string.distance_calibration_right).forEachIndexed { index, label ->
+                key(index, resetKey) {
+                    ProductionNumericSetting(strings.distanceText(label), drafts[index],
+                        strings.distanceText(R.string.cm), palette,
+                        { raw -> drafts = ArrayList(drafts).also { it[index] = raw } },
+                        range = Int.MIN_VALUE.toFloat()..Int.MAX_VALUE.toFloat(), adjustable = true)
+                }
+            }
+            DistanceActionButton(strings.distanceText(R.string.reset), palette = palette, modifier = Modifier.fillMaxWidth()) {
+                focus.clearFocus()
+                drafts = arrayListOf("0", "0", "0", "0")
+                // Recreate editors even if a focused draft and Reset end at the same accepted zero.
+                resetKey++
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DistanceActionButton(strings.distanceText(R.string.distance_car_use), palette = palette, primary = true,
+                    modifier = Modifier.weight(1f)) {
+                    focus.clearFocus()
+                    val values = drafts.map { it.toDoubleOrNull() }
+                    val error = when {
+                        values.any { it == null || !it.isFinite() || it % 1.0 != 0.0 ||
+                            it < Int.MIN_VALUE || it > Int.MAX_VALUE } -> R.string.distance_calibration_integer_error
+                        values[0]!! + values[1]!! >= AdasDistanceModel.LENGTH -> R.string.distance_calibration_length_error
+                        values[2]!! + values[3]!! >= AdasDistanceModel.WIDTH -> R.string.distance_calibration_width_error
+                        else -> null
+                    }
+                    if (error != null) Toast.makeText(context, strings.distanceText(error), Toast.LENGTH_LONG).show()
+                    else onApply(values[0]!!.toInt(), values[1]!!.toInt(), values[2]!!.toInt(), values[3]!!.toInt())
+                }
+                DistanceActionButton(strings.distanceText(R.string.cancel), palette = palette,
+                    modifier = Modifier.weight(1f), onClick = onDismiss)
+            }
+        }
+    }
 }
 
 @Composable

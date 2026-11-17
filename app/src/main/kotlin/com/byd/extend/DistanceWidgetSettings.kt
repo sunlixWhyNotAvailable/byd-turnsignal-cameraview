@@ -65,7 +65,14 @@ data class DistanceWidgetSettings(
         borderColor = 0xFF54D898.toInt(), x = 0f, y = 56f, backgroundPercent = 80),
     val cluster: DistanceWidgetProfile = DistanceWidgetProfile(),
     val hiddenByButton: Boolean = false,
+    val adasFrontOffsetCm: Int = 0,
+    val adasRearOffsetCm: Int = 0,
+    val adasLeftOffsetCm: Int = 0,
+    val adasRightOffsetCm: Int = 0,
 ) {
+    init {
+        AdasDistanceModel.Calibration.validate(adasFrontOffsetCm, adasRearOffsetCm, adasLeftOffsetCm, adasRightOffsetCm)
+    }
     val profile get() = if (target == DistanceTarget.Tablet) tablet else cluster
 
     fun withProfile(value: DistanceWidgetProfile) =
@@ -114,6 +121,10 @@ data class DistanceWidgetSettings(
         put("tablet", tablet.encode())
         put("cluster", cluster.encode())
         put("hiddenByButton", hiddenByButton)
+        put("adasFrontOffsetCm", adasFrontOffsetCm)
+        put("adasRearOffsetCm", adasRearOffsetCm)
+        put("adasLeftOffsetCm", adasLeftOffsetCm)
+        put("adasRightOffsetCm", adasRightOffsetCm)
         put("zones", JSONArray().apply {
             zones.forEach { zone -> put(JSONObject().apply {
                 put("id", zone.id); put("endCm", zone.endCm); put("color", zone.color)
@@ -142,7 +153,22 @@ data class DistanceWidgetSettings(
                     ?: DistanceDisplayFormat.Obstacles,
                 tablet = data.optJSONObject("tablet")?.let(DistanceWidgetProfile::decode) ?: legacy,
                 cluster = data.optJSONObject("cluster")?.let(DistanceWidgetProfile::decode) ?: legacy,
-                hiddenByButton = data.optBoolean("hiddenByButton", false))
+                hiddenByButton = data.optBoolean("hiddenByButton", false),
+                adasFrontOffsetCm = calibrationInt(data, "adasFrontOffsetCm"),
+                adasRearOffsetCm = calibrationInt(data, "adasRearOffsetCm"),
+                adasLeftOffsetCm = calibrationInt(data, "adasLeftOffsetCm"),
+                adasRightOffsetCm = calibrationInt(data, "adasRightOffsetCm"))
+        }
+
+        private fun calibrationInt(data: JSONObject, key: String): Int {
+            if (!data.has(key)) return 0
+            val raw = data.get(key)
+            require(raw is Number) { "$key must be an integer number of centimetres" }
+            val value = raw.toDouble()
+            require(value.isFinite() && value % 1.0 == 0.0 && value >= Int.MIN_VALUE && value <= Int.MAX_VALUE) {
+                "$key must be an integer number of centimetres within Int range: $raw"
+            }
+            return value.toInt()
         }
     }
 }

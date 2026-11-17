@@ -23,6 +23,41 @@ class DistanceCoverageTest {
     }
     private fun spans(frame: DistanceFrame) = DistanceWidgetContour.spans(readings(frame),frame)
 
+    @Test fun calibrationResetsMotionKeepsRadarAndFixedContourSeam() {
+        val model=DistanceAdasMeasurements()
+        val motion=DistanceContourMotion()
+        var frame=model.accept(listOf(box(7,432.75,-.75)),1,1000)
+        assertFalse(motion.accept(frame,readings(frame),1000))
+        frame=model.accept(listOf(box(7,482.75,-.75)),1,1010)
+        assertTrue(motion.accept(frame,readings(frame),1010))
+        assertTrue(model.calibrate(20,0,0,0))
+        val calibrated=model.recalculate(2,1020)
+        assertFalse(motion.accept(calibrated,readings(calibrated),1020))
+        assertFalse(motion.active(1020))
+        assertEquals(1010L,calibrated.receivedAt)
+        assertEquals(100.0,calibrated.distances()[0],1e-6)
+
+        val radar=ParkingRadarState().apply { begin(0,1); registered(0,1); callback(0x99000062.toInt(),65,1020,1) }
+        val sources=DistanceSources().apply { adas(calibrated); radar(radar.snapshot()) }
+        val fused=sources.frame(1020)
+        assertEquals(65.0,fused.distances()[0],0.0)
+        assertTrue(fused.radarSector(0))
+        val radarSpan=spans(fused).single()
+        assertEquals(AdasDistanceModel.contourStart(0).toFloat(),radarSpan.start,0f)
+        assertEquals(AdasDistanceModel.contourEnd(0).toFloat(),radarSpan.end,0f)
+        assertEquals(65.0,sources.frame(1600).distances()[0],0.0)
+        assertFalse(sources.frame(1600).adasValid)
+
+        val geometry=AdasDistanceModel.Calibration(20,-10,5,-3)
+        val measured=AdasDistanceModel.evaluate(listOf(box(9,522.75,-.75,200.0,180.0)),geometry)
+        val wide=DistanceFrame(3,1700,true,"ready",measured.distances,measured.objects)
+        val seam=spans(wide).single()
+        assertEquals(listOf(7,0,1),seam.sectors)
+        assertTrue(seam.end-seam.start < 1f)
+        assertTrue(DistanceWidgetContour.buildSpans(readings(wide),150,100,listOf(seam))
+            .single().points.all { it.y < 177f })
+    }
+
     @Test fun wideRearBoxKeepsThreeDistancesButOnlyCoversRearBumper() {
         val frame = frame(1000,box(7,-405.25,-.75,400.0,180.0))
         for (i in 3..5) assertEquals(120.0,frame.distances()[i],0.0)

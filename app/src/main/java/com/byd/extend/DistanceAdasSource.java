@@ -41,7 +41,7 @@ final class DistanceAdasSource {
     private Method getTopic, getPayload, getTimestamp;
     private volatile boolean timestampFailureReported;
     private AdasObstacleDecoder decoder;
-    private final DistanceObjectContinuity continuity = new DistanceObjectContinuity();
+    private final DistanceAdasMeasurements measurements = new DistanceAdasMeasurements();
     private ClassLoader loader;
     private volatile boolean needed, failed;
     private boolean started;
@@ -162,6 +162,24 @@ final class DistanceAdasSource {
     }
     private boolean active(long connection) { return needed && !failed && proxy!=null && epoch==connection; }
     void control(Runnable action) { packets.control(action); }
+
+    /** Called on the distance handler, serialized with packet processing. */
+    void setCalibration(int front, int rear, int left, int right) {
+        if (!measurements.calibrate(front, rear, left, right)) return;
+        ++generation;
+        handler.removeCallbacks(stale);
+        try {
+            current=measurements.recalculate(generation,SystemClock.elapsedRealtime());
+            if (current.valid && !current.fresh(SystemClock.elapsedRealtime())) {
+                invalidate("stale_delivery");
+            } else {
+                frames.accept(current);
+                if (current.valid) handler.postDelayed(stale,
+                        Math.max(0,current.receivedAt+DistanceFrame.STALE_MS-SystemClock.elapsedRealtime()));
+            }
+            emit("distance_calibration_applied","generation",generation,"frame_available",current.valid);
+        } catch (Throwable error) { error("calibration_recalculate",error); }
+    }
     private void status(boolean ready) {
         if(!ready) { subscribed.clear(); started=false; generationState("service_disconnected"); return; }
         try {
@@ -198,12 +216,10 @@ final class DistanceAdasSource {
             long decoded=measure?SystemClock.elapsedRealtimeNanos():0;
             long decodedCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
             CriticalOperationTrace.phase("distance_model");
-            AdasDistanceModel.Result measured=AdasDistanceModel.evaluate(objects);
+            DistanceFrame next=measurements.accept(objects,generation,received);
             long modeled=measure?SystemClock.elapsedRealtimeNanos():0;
             long modeledCpu=measure?android.os.Debug.threadCpuTimeNanos():0;
             if(!active(packet.connection) || !packets.current(token)) return;
-            DistanceFrame next=new DistanceFrame(generation,received,true,"ready",measured.distances,
-                    continuity.accept(measured.objects));
             if(!next.fresh(SystemClock.elapsedRealtime())) { expired++; invalidate("stale_delivery"); return; }
             boolean recovering=!current.valid;
             current=next; count++;
@@ -240,7 +256,7 @@ final class DistanceAdasSource {
         invalidate(reason);
     }
     private void invalidate(String reason) {
-        continuity.clear();
+        measurements.clear();
         timing.clear();
         boolean changed=current.valid || !reason.equals(current.status);
         if(changed) {

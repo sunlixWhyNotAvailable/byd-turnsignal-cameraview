@@ -61,6 +61,8 @@ public class CameraFrameFreshnessTest {
     @Test public void oldCameraHostCannotBeRetainedWithoutTheFreshnessOperation() {
         assertEquals("protocol_mismatch",
                 TurnSignalShellProtocol.compatibilityError(47, BuildConfig.VERSION_CODE));
+        assertEquals("protocol_mismatch",
+                TurnSignalShellProtocol.compatibilityError(54, BuildConfig.VERSION_CODE));
         assertEquals("", TurnSignalShellProtocol.compatibilityError(
                 TurnSignalShellProtocol.VERSION, BuildConfig.VERSION_CODE));
     }
