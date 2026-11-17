@@ -18,6 +18,7 @@ final class HazardThanksSequence {
     private long activatedAtMs;
     private long deadlineAt;
     private long generation;
+    private long lastModeAtMs, modeReadStartedMs, modeReadEndedMs;
 
     /** Returns null when started, or the exact preflight rejection reason. */
     String start(int mode, int stalk, Integer sound, int flashes, long activatedAtMs) {
@@ -38,6 +39,7 @@ final class HazardThanksSequence {
         cycleStarted = false;
         hazardsModeSeen = false;
         this.activatedAtMs = activatedAtMs;
+        lastModeAtMs = modeReadStartedMs = modeReadEndedMs = activatedAtMs;
         deadlineAt = activatedAtMs + NO_CYCLE_TIMEOUT_MS;
         return null;
     }
@@ -52,6 +54,20 @@ final class HazardThanksSequence {
     // Millisecond-equal callbacks may have arrived before this sequence was activated.
     boolean observationIsAfterActivation(long observedAtMs) {
         return active && observedAtMs > activatedAtMs;
+    }
+
+    /** Negative read start identifies a callback; overlapping callbacks need the next normal GET. */
+    String modeObservationRejection(long readStartedMs, long observedAtMs) {
+        if (!observationIsAfterActivation(observedAtMs)) return "before_activation";
+        if (readStartedMs < 0 && observedAtMs <= modeReadEndedMs)
+            return observedAtMs < modeReadStartedMs ? "before_newer_get" : "overlaps_get";
+        if (observedAtMs <= lastModeAtMs) return "older_or_equal_observation";
+        if (readStartedMs >= 0) {
+            modeReadStartedMs = readStartedMs;
+            modeReadEndedMs = observedAtMs;
+        }
+        lastModeAtMs = observedAtMs;
+        return null;
     }
 
     /** Manual stalk inputs always take priority over the owned hazard request. */

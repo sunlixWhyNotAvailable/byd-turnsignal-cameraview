@@ -657,8 +657,10 @@ final class TurnSignalGuardRuntime {
         }
         Integer stalk = readHazardThanksSignal(
                 HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_STALK_FID, "stalk", "active");
+        long modeReadStartedMs = SystemClock.elapsedRealtime();
         Integer mode = readHazardThanksSignal(
                 HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_MODE_FID, "mode", "active");
+        long modeReadEndedMs = SystemClock.elapsedRealtime();
         if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
         if (stalk == null || mode == null) {
             finishHazardThanks("required_signal_get_failed", "cancelled", "");
@@ -672,7 +674,7 @@ final class TurnSignalGuardRuntime {
             return;
         }
         observeHazardThanksManualSignals(stalk, mode, "active_get",
-                SystemClock.elapsedRealtime(), true, true);
+                modeReadEndedMs, true, true, modeReadStartedMs);
         if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
 
         Integer sound = readHazardThanksSignal(HAZARD_THANKS_SOUND_DEVICE,
@@ -1317,15 +1319,31 @@ final class TurnSignalGuardRuntime {
         if (gesture.longMode && requestedEnabled) startSession(direction, now);
     }
 
+    private String lastHazardModeRejection = "";
+
     private void observeHazardThanksManualSignals(
             int stalk, int mode, String source, long observedMs,
-            boolean observeStalk, boolean observeMode) {
+            boolean observeStalk, boolean observeMode, long readStartedMs) {
         if (!hazardThanksOwnsRequest
                 || !hazardThanks.observationIsAfterActivation(observedMs)) return;
         if (observeStalk && stalk != lastHazardThanksStalk) {
             emit("hazard_thanks_stalk_edge", "previous", lastHazardThanksStalk,
                     "value", stalk, "source", source, "observed_ms", observedMs);
             lastHazardThanksStalk = stalk;
+        }
+        if (observeMode) {
+            String rejection = hazardThanks.modeObservationRejection(readStartedMs, observedMs);
+            if (rejection != null) {
+                String key = hazardThanks.generation() + ":" + mode + ":" + rejection;
+                if (!key.equals(lastHazardModeRejection)) {
+                    lastHazardModeRejection = key;
+                    emit("hazard_thanks_mode_observation_rejected", "reason", rejection,
+                            "mode", mode, "source", source, "observed_ms", observedMs,
+                            "processed_ms", SystemClock.elapsedRealtime(),
+                            "generation", hazardThanks.generation());
+                }
+                observeMode = false;
+            }
         }
         if (observeMode && mode != lastHazardThanksMode) {
             emit("hazard_thanks_mode_edge", "previous", lastHazardThanksMode,
@@ -1349,15 +1367,14 @@ final class TurnSignalGuardRuntime {
         boolean observeStalk = (liveMask & TurnSignalTelemetryController.LIVE_STALK) != 0;
         boolean observeMode = (liveMask & TurnSignalTelemetryController.LIVE_BLINK) != 0;
         if (!observeStalk && !observeMode) return;
-        if ((observeStalk && (stalk < 1 || stalk > 5))
-                || (observeMode && (mode < 1 || mode > 9))) {
+        if (observeStalk && (stalk < 1 || stalk > 5)) {
             finishHazardThanks("required_telemetry_invalid", "cancelled",
                     "stalk=" + (observeStalk ? stalk : "not_observed")
                             + ", mode=" + (observeMode ? mode : "not_observed"));
             return;
         }
         observeHazardThanksManualSignals(stalk, mode, source.name(), observedMs,
-                observeStalk, observeMode);
+                observeStalk, observeMode, -1);
     }
 
     private void logRejectedGesture(TurnSignalGestureState.Result gesture, String source) {

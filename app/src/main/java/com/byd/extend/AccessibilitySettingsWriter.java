@@ -10,6 +10,7 @@ final class AccessibilitySettingsWriter {
         boolean enableAccessibility();
         default void stage(String value) {}
         default Failure failure() { return null; }
+        default boolean connected() { return false; }
     }
 
     interface Cancellation { boolean cancelled(); }
@@ -69,16 +70,22 @@ final class AccessibilitySettingsWriter {
         final boolean listed;
         final boolean cancelled;
         final Failure failure;
+        final boolean rebound;
 
         Result(boolean ok, boolean listed, boolean cancelled) {
             this(ok, listed, cancelled, null);
         }
 
         Result(boolean ok, boolean listed, boolean cancelled, Failure failure) {
+            this(ok, listed, cancelled, failure, false);
+        }
+
+        Result(boolean ok, boolean listed, boolean cancelled, Failure failure, boolean rebound) {
             this.ok = ok;
             this.listed = listed;
             this.cancelled = cancelled;
             this.failure = failure;
+            this.rebound = rebound;
         }
     }
 
@@ -89,6 +96,7 @@ final class AccessibilitySettingsWriter {
         synchronized (LOCK) {
             String current = "";
             boolean removedForRebind = false;
+            boolean rebound = false;
             try {
                 access.stage("read_services");
                 current = normalize(access.readServices());
@@ -98,13 +106,14 @@ final class AccessibilitySettingsWriter {
 
                 boolean installed = WeatherAccessibilitySettings.hasOwnService(current);
                 boolean legacy = WeatherAccessibilitySettings.hasLegacyService(current);
-                if (forceRebind && installed) {
+                if (forceRebind && installed && !access.connected()) {
                     access.stage("write_services");
                     if (!access.writeServices(WeatherAccessibilitySettings
                             .transformEnabledAccessibilityServices(current, false))) {
                         return failed(access, false, false, "write_services", "command_failure");
                     }
                     removedForRebind = true;
+                    rebound = true;
                     boolean paused = pause.run();
                     boolean superseded = cancelled(cancellation);
                     if (!paused || superseded) {
@@ -162,7 +171,7 @@ final class AccessibilitySettingsWriter {
                     throw readbackFailure;
                 }
                 boolean listed = WeatherAccessibilitySettings.hasOwnService(readback);
-                if (enabled && listed) return new Result(true, true, false);
+                if (enabled && listed) return new Result(true, true, false, null, rebound);
                 Failure failure = !enabled ? enableFailure : access.failure();
                 if (failure == null) failure = new Failure(enabled
                         ? "readback_services" : "enable_accessibility", "not_enabled", "",

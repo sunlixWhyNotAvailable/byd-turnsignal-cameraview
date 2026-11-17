@@ -154,6 +154,11 @@ final class MusicArtworkRuntime {
                             if (!message.getBoolean("readback_matches")) error("publish_readback",
                                     new IOException("OEM artwork readback differs; same_owner=" + message.getBoolean("same_owner")
                                             + ", provider_result=" + message.getInt("provider_result")));
+                        } else if ("readback_state".equals(kind)) {
+                            events.accept("music_artwork_readback", new Object[]{"detail", message.toString()});
+                            if (!"mismatch".equals(message.optString("state"))) {
+                                synchronized (this) { failures.remove("publish_readback"); }
+                            }
                         } else if ("cleanup_request".equals(kind)) {
                             String orphan = message.getString("image_id");
                             if (message.getInt("user") != user || !orphan.matches("[a-f0-9]{32}") || orphan.equals(imageId))

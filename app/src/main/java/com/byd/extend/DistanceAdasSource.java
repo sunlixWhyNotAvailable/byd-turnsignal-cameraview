@@ -46,7 +46,13 @@ final class DistanceAdasSource {
     private volatile boolean needed, failed;
     private boolean started;
     private volatile long epoch;
-    private long generation, count, startedAt, expired;
+    private volatile long generation;
+    private long count, startedAt, expired;
+    private final java.util.concurrent.atomic.AtomicBoolean firstPacketPending =
+            new java.util.concurrent.atomic.AtomicBoolean(true);
+    private long unavailableAt;
+    private final java.util.concurrent.atomic.AtomicReference<Boolean> lastReceivedServiceStatus =
+            new java.util.concurrent.atomic.AtomicReference<>();
     private final DiagnosticTimingWindow timing = new DiagnosticTimingWindow(
             "work_us", "queue_ms", "decode_us", "decode_cpu_us", "model_us", "model_cpu_us",
             "publish_us", "publish_cpu_us", "age_ms");
@@ -71,6 +77,9 @@ final class DistanceAdasSource {
         if(!next) { close(); failed=false; return; }
         if(failed) return;
         startedAt=SystemClock.elapsedRealtime(); count=0;
+        firstPacketPending.set(true);
+        unavailableAt=startedAt;
+        lastReceivedServiceStatus.set(null);
         final long connection=++epoch;
         ++generation;
         timing.clear();
@@ -101,8 +110,23 @@ final class DistanceAdasSource {
                 }
                 if(method.getName().equals("onRequest")) return args==null||args.length==0?null:args[0];
                 if(method.getName().equals("onChangeServiceStatus")) {
+                    long received=SystemClock.elapsedRealtime();
                     boolean ready=args!=null && args.length==1 && Boolean.TRUE.equals(args[0]);
-                    if(active(connection)) packets.control(()-> { if(active(connection)) status(ready); });
+                    if(!active(connection)) return null;
+                    Boolean previous=lastReceivedServiceStatus.getAndSet(ready);
+                    boolean changed=previous==null || previous!=ready;
+                    if(changed) emit("distance_source_service_transition", "phase","received",
+                            "connection",connection,"generation",generation,"ready",ready,"received_ms",received);
+                    if(active(connection)) packets.control(()-> {
+                        if(active(connection)) {
+                            if(changed)
+                                emit("distance_source_service_transition", "phase","processed", "connection", connection,
+                                        "generation",generation,
+                                        "ready", ready, "received_ms", received,
+                                        "processed_ms", SystemClock.elapsedRealtime());
+                            status(ready);
+                        }
+                    });
                 } else if(method.getName().equals("onSomeIpEvent") && args!=null && args.length==1) {
                     final long received=SystemClock.elapsedRealtime();
                     final long receivedWall=DiagnosticLogPolicy.extended()?System.currentTimeMillis():0;
@@ -111,6 +135,9 @@ final class DistanceAdasSource {
                         if(topic!=DATA && topic!=AVAILABLE && topic!=UNAVAILABLE) return null;
                         if (!active(connection)) return null;
                         if(topic==DATA) {
+                            if(firstPacketPending.compareAndSet(true,false))
+                                emit("distance_source_first_packet", "connection", connection,
+                                        "generation",generation,"received_ms", received);
                             Long timestamp=null;
                             if(DiagnosticLogPolicy.extended() && getTimestamp!=null) try {
                                 timestamp=((Number)call(getTimestamp,args[0])).longValue();
@@ -126,6 +153,9 @@ final class DistanceAdasSource {
             emit("distance_source_started","uid",android.os.Process.myUid(),"pid",android.os.Process.myPid(),
                     "package",identity.getPackageName(),"generation",generation,"backend",proxy.getClass().getName());
             boolean ready=Boolean.TRUE.equals(call(api.getMethod("isServiceReady"),proxy));
+            emit("distance_source_service_transition", "connection", connection,
+                    "ready", ready, "observation", "initial_read",
+                    "processed_ms", SystemClock.elapsedRealtime());
             status(ready);
             if(!ready) call(api.getMethod("reBindService"),proxy);
         } catch(Throwable error) { failed=true; error("initialize",error); close(); }
@@ -177,7 +207,9 @@ final class DistanceAdasSource {
             if(!next.fresh(SystemClock.elapsedRealtime())) { expired++; invalidate("stale_delivery"); return; }
             boolean recovering=!current.valid;
             current=next; count++;
-            if(recovering) emit("distance_source_ready","generation",generation);
+            if(recovering) emit("distance_source_ready","generation",generation,
+                    "connection",epoch,"received_ms",received,"accepted_ms",SystemClock.elapsedRealtime(),
+                    "unavailable_ms",Math.max(0,SystemClock.elapsedRealtime()-unavailableAt));
             operation="publish_frame";
             CriticalOperationTrace.phase("distance_publish");
             frames.accept(current);
@@ -211,13 +243,23 @@ final class DistanceAdasSource {
         continuity.clear();
         timing.clear();
         boolean changed=current.valid || !reason.equals(current.status);
+        if(changed) {
+            if(current.valid) unavailableAt=SystemClock.elapsedRealtime();
+            firstPacketPending.set(true);
+        }
         current=DistanceFrame.unavailable(generation,SystemClock.elapsedRealtime(),reason);
         handler.removeCallbacks(stale);
         if(changed) frames.accept(current);
         if(changed) emit("distance_source_unavailable","reason",reason,"generation",generation);
     }
     private void command(String method,long value) throws Throwable {
+        long begin=SystemClock.elapsedRealtime();
+        emit("distance_source_operation", "operation",method,"phase","begin",
+                "connection",epoch,"generation",generation,"topic",value,"started_ms",begin);
         int result=((Number)call(api.getMethod(method,long.class),proxy,value)).intValue();
+        emit("distance_source_operation", "operation",method,"phase","returned",
+                "connection",epoch,"generation",generation,"topic",value,"oem_result",result,
+                "started_ms",begin,"duration_ms",SystemClock.elapsedRealtime()-begin);
         if(result!=0 && result!=13) throw new IllegalStateException(method+"(0x"+Long.toHexString(value)+") OEM result="+result);
     }
     void close() {

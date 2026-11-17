@@ -1340,6 +1340,35 @@ public final class CameraHelperService extends Service {
         weatherAccessibilityExecutor.execute(() -> recoverWeatherAccessibility(epoch, reason));
     }
 
+    private static boolean quickbootRecoveryChecked;
+
+    private boolean claimQuickbootAccessibilityRecovery() {
+        synchronized (CameraHelperService.class) {
+            if (quickbootRecoveryChecked) return false;
+            quickbootRecoveryChecked = true;
+        }
+        if (android.os.Build.VERSION.SDK_INT < 30) return false;
+        try {
+            android.app.ActivityManager manager = getSystemService(android.app.ActivityManager.class);
+            if (manager == null) return false;
+            for (android.app.ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(getPackageName(), 0, 16)) {
+                if (!getPackageName().equals(exit.getProcessName())) continue;
+                long processStarted = System.currentTimeMillis()
+                        - (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime());
+                boolean quickboot = AccessibilityRecoveryGate.isQuickbootExit(
+                        exit.getDescription(), exit.getTimestamp(), processStarted);
+                lifecycle("weather_accessibility_restart_evidence", "quickboot", quickboot,
+                        "previous_pid", exit.getPid(), "exit_reason", exit.getReason(),
+                        "exit_wall_ms", exit.getTimestamp());
+                return quickboot;
+            }
+        } catch (RuntimeException failure) {
+            AdbRecoveryDiagnostics.failure(this::lifecycle,
+                    "weather_accessibility_restart_evidence_failed", "process_exit_history", failure);
+        }
+        return false;
+    }
+
     private void recoverWeatherAccessibility(long epoch, String reason) {
         int user = AvasNotificationAccess.userIdForUid(Process.myUid());
         String correlationId = newWeatherAccessibilityCorrelationId();
@@ -1351,16 +1380,25 @@ public final class CameraHelperService extends Service {
             stage = "registration";
             attempt = "initial";
             String initialCorrelationId = correlationId + "-initial";
-            if (!applyWeatherAccessibility(true, false, epoch, initialCorrelationId)) {
+            boolean quickboot = claimQuickbootAccessibilityRecovery();
+            boolean lostBinding = AccessibilityRecoveryGate.immediateRebind(reason, quickboot);
+            AccessibilitySettingsWriter.Result initial = applyWeatherAccessibility(
+                    true, lostBinding, epoch, initialCorrelationId);
+            if (initial == null || !initial.ok) {
                 outcome = weatherAccessibilityRecovery.isCurrent(epoch)
                         ? "registration_failed" : "cancelled";
                 return;
             }
+            if (initial.rebound) attempt = "immediate_rebind";
             stage = "bind_wait";
             if (awaitWeatherAccessibilityConnection(
-                    epoch, user, initialCorrelationId, "initial")) {
+                    epoch, user, initialCorrelationId, attempt)) {
                 outcome = "connected";
                 return;
+            }
+            if (initial.rebound) {
+                outcome = weatherAccessibilityRecovery.isCurrent(epoch) ? "timeout" : "superseded";
+                return; // This attempt already performed its single recovery rebind.
             }
             if (!weatherAccessibilityRecovery.isCurrent(epoch)) {
                 outcome = "superseded";
@@ -1369,7 +1407,8 @@ public final class CameraHelperService extends Service {
             stage = "rebind";
             attempt = "rebind";
             String rebindCorrelationId = correlationId + "-rebind";
-            if (!applyWeatherAccessibility(true, true, epoch, rebindCorrelationId)) {
+            AccessibilitySettingsWriter.Result rebound = applyWeatherAccessibility(true, true, epoch, rebindCorrelationId);
+            if (rebound == null || !rebound.ok) {
                 outcome = weatherAccessibilityRecovery.isCurrent(epoch)
                         ? "rebind_failed" : "cancelled";
                 return;
@@ -1418,15 +1457,18 @@ public final class CameraHelperService extends Service {
         });
     }
 
-    private boolean applyWeatherAccessibility(
+    private AccessibilitySettingsWriter.Result applyWeatherAccessibility(
             boolean enabled, boolean forceRebind, long recoveryEpoch, String correlationId) {
-        if (!enabled) return true;
+        if (!enabled) return new AccessibilitySettingsWriter.Result(true, false, false);
         int user = AvasNotificationAccess.userIdForUid(Process.myUid());
         AccessibilitySettingsWriter.Failure[] operationFailure = new AccessibilitySettingsWriter.Failure[1];
         String[] operationStage = {"read_services"};
         AccessibilitySettingsWriter.Result result;
         try {
             result = AccessibilitySettingsWriter.ensureEnabled(new AccessibilitySettingsWriter.Access() {
+                    @Override public boolean connected() {
+                        return WeatherRefreshAccessibilityService.isConnected();
+                    }
                     @Override public void stage(String value) { operationStage[0] = value; }
 
                     @Override public AccessibilitySettingsWriter.Failure failure() {
@@ -1515,7 +1557,7 @@ public final class CameraHelperService extends Service {
                     "recovery_epoch", recoveryEpoch, "user", user,
                     "rebind", forceRebind);
             clearWeatherAccessibilityTarget(true);
-            return false;
+            return null;
         }
         boolean bound = WeatherRefreshAccessibilityService.isConnected();
         AccessibilitySettingsWriter.Failure detail = result.failure;
@@ -1549,7 +1591,7 @@ public final class CameraHelperService extends Service {
                 "rebind", forceRebind, "user", user,
                 "recovery_epoch", recoveryEpoch, "correlation_id", correlationId);
         if (!result.ok && !result.cancelled) clearWeatherAccessibilityTarget(true);
-        return result.ok;
+        return result;
     }
 
     private void clearWeatherAccessibilityTarget(boolean attemptedValue) {

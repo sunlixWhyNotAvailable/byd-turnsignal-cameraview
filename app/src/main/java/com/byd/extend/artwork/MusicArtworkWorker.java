@@ -51,6 +51,7 @@ public final class MusicArtworkWorker {
         JSONObject original = null;
         String originalTrack = null;
         boolean touched = false, cleaned = true;
+        ArtworkReadbackDiagnostics readbackDiagnostics = new ArtworkReadbackDiagnostics();
         try (RandomAccessFile lockFile = new RandomAccessFile("/data/local/tmp/byd-extend-artwork.lock", "rw");
              FileLock lock = lockFile.getChannel().tryLock()) {
             if (lock == null) throw new IOException("Previous artwork writer still owns the provider");
@@ -63,9 +64,16 @@ public final class MusicArtworkWorker {
                 while (true) {
                     JSONObject state = state(in, out);
                     if (!state.optBoolean("active")) break;
-                    if (!state.has("track")) { Thread.sleep(500); continue; } // Superseded preparation is not missing artwork.
+                    if (!state.has("track")) {
+                        diagnostic(out, readbackDiagnostics.finish("superseded", android.os.SystemClock.elapsedRealtime()));
+                        Thread.sleep(500); continue;
+                    } // Superseded preparation is not missing artwork.
+                    long readBegin = android.os.SystemClock.elapsedRealtime();
                     JSONObject row = provider.query();
+                    long readEnd = android.os.SystemClock.elapsedRealtime();
                     String cover = nullable(state, "cover"), track = nullable(state, "track");
+                    diagnostic(out, readbackDiagnostics.observed(track, cover, row.getInt("device"),
+                            row.getInt("source"), nullable(row, "cover"), readBegin, readEnd));
                     if (original != null && (row.getInt("device") != original.getInt("device")
                             || row.getInt("source") != 26)) break;
                     if (cover != null && !MusicArtworkPolicy.owns(prefix, cover))
@@ -84,8 +92,15 @@ public final class MusicArtworkWorker {
                                 checked.getInt("source"), track, nullable(confirmed, "track"), cover, nullable(confirmed, "cover"))) {
                             if (original == null) { original = row; originalTrack = track; }
                             touched = true;
+                            long updateBegin = android.os.SystemClock.elapsedRealtime();
                             int result = provider.update(checked, cover);
+                            long updateEnd = android.os.SystemClock.elapsedRealtime();
+                            readBegin = android.os.SystemClock.elapsedRealtime();
                             JSONObject readback = provider.query();
+                            readEnd = android.os.SystemClock.elapsedRealtime();
+                            diagnostic(out, readbackDiagnostics.written(track, cover, checked.getInt("device"),
+                                    checked.getInt("source"), readback.getInt("device"), readback.getInt("source"),
+                                    nullable(readback, "cover"), result, updateBegin, updateEnd, readBegin, readEnd));
                             boolean sameOwner = readback.getInt("device") == checked.getInt("device")
                                     && readback.getInt("source") == checked.getInt("source");
                             event(out, "published", "cover", cover, "provider_result", result,
@@ -98,6 +113,8 @@ public final class MusicArtworkWorker {
             } catch (Throwable failure) {
                 error(out, "provider_relay", failure);
             } finally {
+                try { diagnostic(out, readbackDiagnostics.finish("ended_unverified", android.os.SystemClock.elapsedRealtime())); }
+                catch (Throwable secondary) { error(out, "readback_diagnostic_secondary", secondary); }
                 if (touched && original != null && provider != null) {
                     try {
                         String track = null;
@@ -139,6 +156,10 @@ public final class MusicArtworkWorker {
                 }
             }
         } catch (IOException failure) { failure.printStackTrace(); }
+    }
+
+    private static void diagnostic(PrintWriter out, JSONObject diagnostic) {
+        if (diagnostic != null) out.println(diagnostic);
     }
 
     public static String imagePrefix(int user, String token) {

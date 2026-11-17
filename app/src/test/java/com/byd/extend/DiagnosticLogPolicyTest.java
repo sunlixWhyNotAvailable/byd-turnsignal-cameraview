@@ -19,6 +19,18 @@ public class DiagnosticLogPolicyTest {
     }
     @After public void restore() { DiagnosticLogPolicy.configure(previous); }
 
+    @Test public void recoveryTransitionsRemainOrdinaryWithoutPerFrameDiagnostics() {
+        DiagnosticLogPolicy.configure(false);
+        for (String kind : new String[]{"distance_source_service_transition", "distance_source_operation",
+                "distance_source_first_packet", "distance_source_ready", "music_artwork_readback",
+                "camera_launch_owned", "camera_launch_join", "camera_launch_ready",
+                "hazard_thanks_mode_observation_rejected", "weather_accessibility_restart_evidence"})
+            assertTrue(kind, DiagnosticLogPolicy.shouldPersist(kind));
+        assertFalse(DiagnosticLogPolicy.shouldPersist("distance_frame_detail"));
+        assertFalse(DiagnosticLogPolicy.shouldPersist("distance_source_metrics"));
+        assertFalse(DiagnosticLogPolicy.shouldPersist("music_artwork_publish"));
+    }
+
     @Test public void ordinaryModeKeepsFunctionalDeliveryAndUnknownEventsWithoutFps() {
         DiagnosticLogPolicy.configure(false);
         for (String kind : new String[]{"camera_fps_window_stats", "camera_source_output_stats",

@@ -2,6 +2,15 @@ package com.byd.extend;
 
 /** Coalesces one bounded Accessibility recovery attempt and invalidates stale work. */
 final class AccessibilityRecoveryGate {
+    static boolean isQuickbootExit(String description, long exitedAtMs, long processStartedAtMs) {
+        return exitedAtMs > 0 && exitedAtMs <= processStartedAtMs && description != null
+                && description.toLowerCase(java.util.Locale.ROOT).contains("quickboot");
+    }
+
+    static boolean immediateRebind(String reason, boolean quickboot) {
+        return quickboot || "disconnect".equals(reason);
+    }
+
     private long epoch;
     private boolean running;
 

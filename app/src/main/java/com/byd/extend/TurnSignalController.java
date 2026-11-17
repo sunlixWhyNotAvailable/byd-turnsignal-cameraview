@@ -73,7 +73,8 @@ final class TurnSignalController {
     private final ExecutorService reverseHideWorker = Executors.newSingleThreadExecutor(r -> new Thread(r, "reverse-hide"));
     private volatile int closingReverseRequestId;
     private java.util.concurrent.CompletableFuture<LocalAdbClient.Result> cameraLaunch, avmLaunch;
-    private boolean cameraLaunchReplacement, avmLaunchReplacement;
+    private long cameraLaunchGeneration;
+    private boolean avmLaunchReplacement;
     private volatile boolean terminatePendingLaunches;
     private final AtomicReference<Runnable> pendingReverseSteering = new AtomicReference<>();
     private final ReverseOverlayVisibilityGate reverseVisibilityGate =
@@ -3216,16 +3217,33 @@ final class TurnSignalController {
                 },
                 SystemClock::elapsedRealtime,
                 Thread::sleep,
-                3_000);
+                3_000, () -> stopped);
         IBinder value = resolution.binder;
         LocalAdbClient.Result launch = resolution.launch;
         if (stopped) throw new IllegalStateException("camera launch cancelled by shutdown");
         if (value == null || cameraHelper != value)
             emitCameraStartupJournal(false, value == null ? "not_ready" : "binder_ready");
+        if (value == null && resolution.pendingLaunch instanceof CameraLaunchAttempt) {
+            CameraLaunchAttempt attempt = (CameraLaunchAttempt) resolution.pendingLaunch;
+            emit("camera_launch_not_ready", "generation", attempt.generation, "pid", attempt.pid,
+                    "start_ticks", attempt.startTicks, "deadline_ms", attempt.deadlineMs,
+                    "elapsed_ms", SystemClock.elapsedRealtime(), "command_finished", attempt.isDone());
+        }
         if (launch != null && value == null)
             throw new IllegalStateException(cameraHelperFailureMessage(launch));
         int pid = cameraHelperPid(value);
         if (pid <= 0) throw new IllegalStateException("camera_shell_binder_timeout");
+        synchronized (this) {
+            CameraLaunchAttempt attempt = cameraLaunch instanceof CameraLaunchAttempt
+                    ? (CameraLaunchAttempt) cameraLaunch : null;
+            if (attempt != null && !attempt.ready
+                    && (attempt == resolution.pendingLaunch || attempt.pid == pid)) {
+                attempt.ready = true;
+                emit("camera_launch_ready", "generation", attempt.generation, "pid", pid,
+                        "started_ms", attempt.startedAtMs, "deadline_ms", attempt.deadlineMs,
+                        "duration_ms", SystemClock.elapsedRealtime() - attempt.startedAtMs);
+            }
+        }
         if (cameraHelper != value) {
             emit("camera_process_binder_ready", "avm", false, "elapsed_ms", SystemClock.elapsedRealtime());
             long epoch = installCameraHelper(value);
@@ -3444,11 +3462,12 @@ final class TurnSignalController {
         ensureAvmShell(true, stale);
     }
 
-    private LocalAdbClient.Result launchCameraProcess(boolean avm) {
+    private LocalAdbClient.Result launchCameraProcess(boolean avm, CameraLaunchAttempt previous) {
         String apk = context.getApplicationInfo().sourceDir;
         int owner = context.getApplicationInfo().uid;
         String command = avm ? avmLaunchCommand(apk, owner, BuildConfig.VERSION_CODE)
-                : cameraLaunchCommand(apk, owner, BuildConfig.VERSION_CODE);
+                : cameraLaunchCommand(apk, owner, BuildConfig.VERSION_CODE,
+                        previous == null ? 0 : previous.pid, previous == null ? 0 : previous.startTicks);
         if (!cameraRuntimeHost) return LocalAdbClient.executeAuthorized(context, command, this::emit);
         return launchShellProcess(command, avm);
     }
@@ -3456,19 +3475,44 @@ final class TurnSignalController {
     private synchronized java.util.concurrent.CompletableFuture<LocalAdbClient.Result> launchCameraAsync(
             boolean avm, boolean replacement) {
         java.util.concurrent.CompletableFuture<LocalAdbClient.Result> previous = avm ? avmLaunch : cameraLaunch;
-        if (previous != null && !previous.isDone()
-                && (!replacement || (avm ? avmLaunchReplacement : cameraLaunchReplacement))) return previous;
-        java.util.concurrent.CompletableFuture<LocalAdbClient.Result> next = new java.util.concurrent.CompletableFuture<>();
+        if (!avm && previous instanceof CameraLaunchAttempt
+                && ((CameraLaunchAttempt) previous).canJoin(SystemClock.elapsedRealtime(), replacement)) {
+            emit("camera_launch_join", "generation", ((CameraLaunchAttempt) previous).generation,
+                    "command_finished", previous.isDone(), "deadline_ms", ((CameraLaunchAttempt) previous).deadlineMs);
+            return previous;
+        }
+        if (avm && previous != null && !previous.isDone()
+                && (!replacement || avmLaunchReplacement)) return previous;
+        CameraLaunchAttempt attempt = avm ? null : new CameraLaunchAttempt(
+                ++cameraLaunchGeneration, SystemClock.elapsedRealtime(), replacement);
+        java.util.concurrent.CompletableFuture<LocalAdbClient.Result> next = avm
+                ? new java.util.concurrent.CompletableFuture<>() : attempt;
         if (avm) { avmLaunch = next; avmLaunchReplacement = replacement; }
-        else { cameraLaunch = next; cameraLaunchReplacement = replacement; }
+        else cameraLaunch = next;
         new Thread(() -> {
             try {
                 if (previous != null && !previous.isDone()) previous.join();
                 if (stopped) { next.complete(LocalAdbClient.Result.cancelled()); return; }
+                if (attempt != null && SystemClock.elapsedRealtime() >= attempt.deadlineMs) {
+                    next.complete(LocalAdbClient.Result.failed("camera_startup_deadline_before_launch", "", -1, "launch"));
+                    return;
+                }
+                // Recheck at the destructive boundary: a late ready Binder wins over replacement.
+                if (!avm && !replacement && cameraPing(resolveCameraHelper())) {
+                    next.complete(LocalAdbClient.Result.ok("camera_binder_ready_before_launch", 0, "shell", false));
+                    return;
+                }
                 emitCameraStartupJournal(avm, "before_replacement");
                 long began = SystemClock.elapsedRealtime();
                 emit("camera_process_launch_begin", "avm", avm, "elapsed_ms", began);
-                LocalAdbClient.Result result = launchCameraProcess(avm);
+                LocalAdbClient.Result result = launchCameraProcess(avm,
+                        previous instanceof CameraLaunchAttempt ? (CameraLaunchAttempt) previous : null);
+                if (attempt != null) {
+                    attempt.recordIdentity(result.output);
+                    emit("camera_launch_owned", "generation", attempt.generation, "pid", attempt.pid,
+                            "start_ticks", attempt.startTicks, "started_ms", attempt.startedAtMs,
+                            "deadline_ms", attempt.deadlineMs, "command_ok", result.ok);
+                }
                 emit("camera_process_launch_end", "avm", avm, "ok", result.ok,
                         "elapsed_ms", SystemClock.elapsedRealtime(), "duration_ms", SystemClock.elapsedRealtime() - began,
                         "error", result.error, "output", result.output);
@@ -4320,6 +4364,24 @@ final class TurnSignalController {
         if (value == null || !value.isBinderAlive()) value = resolveCameraHelper();
         if (value == null || !value.isBinderAlive()) {
             if (cached != null) clearCameraHelper(cached, cachedEpoch);
+            CameraLaunchAttempt attempt;
+            synchronized (this) {
+                attempt = cameraLaunch instanceof CameraLaunchAttempt ? (CameraLaunchAttempt) cameraLaunch : null;
+            }
+            if (attempt != null && !attempt.ready && attempt.pid > 0 && attempt.startTicks > 0) {
+                new Thread(() -> {
+                    try {
+                        String command = cameraStopOwnedCommand(attempt.pid, attempt.startTicks);
+                        LocalAdbClient.Result result = cameraRuntimeHost ? launchShellProcess(command, false)
+                                : LocalAdbClient.executeAuthorized(context, command, this::emit);
+                        emit("camera_initializing_shutdown", "generation", attempt.generation,
+                                "pid", attempt.pid, "ok", result.ok, "error", result.error, "output", result.output);
+                    } catch (Throwable failure) {
+                        emit("camera_initializing_shutdown_failed", "generation", attempt.generation,
+                                "pid", attempt.pid, "error", StockAvmShellProtocol.diagnostic(failure));
+                    }
+                }, "camera-launch-shutdown").start();
+            }
             return;
         }
         try {
@@ -4521,11 +4583,18 @@ final class TurnSignalController {
                 + TurnSignalShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
     }
 
-    static String cameraLaunchCommand(String apkPath, int appUid, int versionCode) {
+    static String cameraLaunchCommand(String apkPath, int appUid, int versionCode,
+                                      int previousPid, long previousStartTicks) {
         String apk = shellQuote(apkPath);
         String process = CameraShellProtocol.PROCESS_NAME;
-        return "for pid in $(pidof " + process
-                + " 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done; "
+        String identities = previousPid > 0 && previousStartTicks > 0
+                ? "'" + previousPid + ":" + previousStartTicks + "'"
+                : "$(for pid in $(pidof " + process + " 2>/dev/null); do camera_identity \"$pid\"; done)";
+        return cameraIdentityFunction() + "for identity in " + identities + "; do pid=${identity%%:*}; "
+                + "if [ \"$(camera_identity \"$pid\")\" = \"$identity\" ] "
+                + "&& [ -n \"$(pidof " + process + " 2>/dev/null | tr ' ' '\\n' | grep -x \"$pid\")\" ]; then "
+                + "echo camera_replacing_identity=$identity; kill \"$pid\" || "
+                + "echo camera_stop_signal_failed=$identity; fi; done; "
                 + "wait_count=0; while [ -n \"$(pidof " + process + " 2>/dev/null)\" ] "
                 + "&& [ \"$wait_count\" -lt 30 ]; do sleep 0.1; "
                 + "wait_count=$((wait_count + 1)); done; "
@@ -4536,8 +4605,22 @@ final class TurnSignalController {
                 + " setsid app_process /system/bin --nice-name=" + process + " "
                 + CameraShellProtocol.HELPER_CLASS + " " + appUid + " " + versionCode
                 + " </dev/null >" + CameraShellProtocol.LOG_PATH + " 2>&1 & "
-                + "for i in 1 2 3; do service list 2>/dev/null | grep -q "
-                + CameraShellProtocol.SERVICE_NAME + " && break; sleep 1; done; fi";
+                + "pid=$!; identity=$(camera_identity \"$pid\"); "
+                + "if [ -n \"$identity\" ]; then echo camera_process_identity=$identity; "
+                + "else echo camera_process_identity_unavailable=$pid; fi; fi";
+    }
+
+    private static String cameraIdentityFunction() {
+        return "camera_identity() { [ \"$(stat -c %u /proc/$1)\" = 2000 ] || return; "
+                + "camera_pid=$1; camera_stat=$(cat /proc/$1/stat) || return; "
+                + "camera_stat=${camera_stat##*) }; set -- $camera_stat; [ $# -ge 20 ] || return; "
+                + "shift 19; printf '%s:%s\\n' \"$camera_pid\" \"$1\"; }; ";
+    }
+
+    static String cameraStopOwnedCommand(int pid, long startTicks) {
+        if (pid <= 0 || startTicks <= 0) throw new IllegalArgumentException("Missing camera process identity");
+        return cameraIdentityFunction() + "if [ \"$(camera_identity " + pid + ")\" = '"
+                + pid + ":" + startTicks + "' ]; then kill " + pid + "; fi";
     }
 
     static String avmLaunchCommand(String apkPath, int appUid, int versionCode) {
@@ -4934,6 +5017,14 @@ final class TurnSignalController {
             LongSupplier clock,
             CameraHelperSleeper sleeper,
             long timeoutMs) throws InterruptedException {
+        return resolveCameraHelperFlow(cached, ping, resolve, launch, clock, sleeper, timeoutMs, () -> false);
+    }
+
+    static CameraHelperResolution resolveCameraHelperFlow(
+            IBinder cached, Predicate<IBinder> ping, Supplier<IBinder> resolve,
+            Supplier<java.util.concurrent.CompletableFuture<LocalAdbClient.Result>> launch,
+            LongSupplier clock, CameraHelperSleeper sleeper, long timeoutMs,
+            java.util.function.BooleanSupplier canceled) throws InterruptedException {
         IBinder value = cached;
         if (ping.test(value)) return new CameraHelperResolution(value, null, null);
         value = resolve.get();
@@ -4941,14 +5032,17 @@ final class TurnSignalController {
 
         java.util.concurrent.CompletableFuture<LocalAdbClient.Result> pending = launch.get();
         LocalAdbClient.Result result = null;
-        long deadline = Long.MAX_VALUE;
+        boolean owned = pending instanceof CameraLaunchAttempt;
+        long deadline = owned ? ((CameraLaunchAttempt) pending).deadlineMs : Long.MAX_VALUE;
         do {
+            if (canceled.getAsBoolean()) return new CameraHelperResolution(null, result, pending);
             if (result == null && pending.isDone()) {
                 result = pending.join();
-                deadline = clock.getAsLong() + timeoutMs;
+                if (!owned) deadline = clock.getAsLong() + timeoutMs;
             }
             value = resolve.get();
             if (ping.test(value)) return new CameraHelperResolution(value, result, pending);
+            if (clock.getAsLong() >= deadline) break;
             sleeper.sleep(100);
         } while (clock.getAsLong() < deadline);
         return new CameraHelperResolution(null, result, pending);

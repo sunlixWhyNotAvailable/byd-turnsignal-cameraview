@@ -17,6 +17,10 @@ import static org.junit.Assert.*;
 
 /** Real loopback input into the production parser; no substitute Stream or camera/helper results. */
 public class CameraViewerRequestTest {
+    @Test public void emptyHealthConnectionIsNotAnHttpRequest() throws Exception {
+        assertNull(parse(""));
+    }
+
     @Test public void compressionHonorsTheBrowsersEncodingPreference() throws Exception {
         for (String encoding : new String[] {"gzip, deflate, br", "GZip;q=0.5", "*;q=1"}) {
             CameraViewerServer.Request request = parse("GET /static/18/hls.js HTTP/1.1\r\nAccept-Encoding: "

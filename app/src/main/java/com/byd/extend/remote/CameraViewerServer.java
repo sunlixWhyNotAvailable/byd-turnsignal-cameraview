@@ -172,6 +172,7 @@ public final class CameraViewerServer implements AutoCloseable {
         try (socket) {
             try {
                 Request request = readRequest(socket);
+                if (request == null) return; // A TCP health check may close without sending HTTP.
                 reply.head = request.method.equals("HEAD");
                 operation = operationName(request.path);
                 trace.request(request.path, operation, now());
@@ -226,7 +227,10 @@ public final class CameraViewerServer implements AutoCloseable {
             while (matched < 4 && headers.size() < MAX_HEADERS) {
                 setReadTimeout(socket, started);
                 int value = input.read();
-                if (value < 0) throw new EOFException("HTTP headers ended before terminator");
+                if (value < 0) {
+                    if (headers.size() == 0) return null;
+                    throw new EOFException("HTTP headers ended before terminator");
+                }
                 headers.write(value);
                 matched = value == (matched % 2 == 0 ? '\r' : '\n') ? matched + 1 : 0;
             }
@@ -1092,8 +1096,7 @@ public final class CameraViewerServer implements AutoCloseable {
 
     private static boolean isExpectedDisconnect(Exception failure, boolean replyStarted,
             String operation) {
-        return failure instanceof SocketException
-                || (failure instanceof EOFException && !replyStarted && "request".equals(operation));
+        return failure instanceof SocketException;
     }
 
     private static SocketException cancelledTransfer(Throwable cause) {

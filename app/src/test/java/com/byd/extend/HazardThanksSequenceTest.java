@@ -9,6 +9,24 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public final class HazardThanksSequenceTest {
+    @Test public void olderAndOverlappingCallbacksCannotUndoNewerGet() {
+        HazardThanksSequence sequence = new HazardThanksSequence();
+        assertNull(sequence.start(1, 1, 3, 2, 61308497));
+        assertNull(sequence.modeObservationRejection(61309770, 61309779));
+        assertNull(sequence.observeMode(6));
+        assertNull(sequence.modeObservationRejection(61310000, 61310018));
+        assertNull(sequence.observeMode(6));
+        assertEquals("before_newer_get", sequence.modeObservationRejection(-1, 61309982));
+        assertEquals("overlaps_get", sequence.modeObservationRejection(-1, 61310007));
+        assertEquals("overlaps_get", sequence.modeObservationRejection(-1, 61310018));
+        assertEquals("manual_stalk_2", sequence.observeStalk(2));
+        assertNull(sequence.modeObservationRejection(-1, 61310019));
+        assertEquals("mode_left_hazards_1", sequence.observeMode(1));
+        sequence.cancel();
+        assertNull(sequence.start(1, 1, 3, 2, 61311000));
+        assertNull(sequence.modeObservationRejection(61311001, 61311002));
+        assertNull(sequence.observeMode(1));
+    }
     @Test public void requiresFreshIdleBaselineAndIgnoresActiveRetriggers() {
         HazardThanksSequence sequence = new HazardThanksSequence();
         assertEquals("mode_not_idle", sequence.start(2, 1, 3, 2, 100));
