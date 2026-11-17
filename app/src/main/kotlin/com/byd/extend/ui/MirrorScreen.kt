@@ -123,7 +123,7 @@ private fun FormScope.MirrorProfileHeader(
     colors: UiPalette,
     onAction: (BydExtendUiAction) -> Unit,
 ): FormScope {
-    row("profile-enabled") { SwitchLine(strings.text("Дзеркало заднього виду", "Rearview mirror"),
+    row("profile-enabled") { SwitchLine(strings.resource(R.string.enable_rearview_mirror),
         strings.text("Окремий віджет камери", "Independent camera widget", "独立摄像头悬浮窗"),
         state.enabled,
         { onAction(BydExtendUiAction.Toggle(ToggleTarget.Simple(ToggleId.MirrorEnabled), it)) },

@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -71,34 +72,36 @@ private fun MusicExclusionsDialog(
     var query by rememberSaveable { mutableStateOf("") }
     var apps by remember { mutableStateOf<List<VisualizationApp>?>(null) }
     var failed by remember { mutableStateOf(false) }
-    LaunchedEffect(context, strings) {
-        apps = null
-        failed = false
-        try {
-            apps = withContext(Dispatchers.IO) {
-                val manager = context.packageManager
-                val collator = Collator.getInstance(context.resources.configuration.locales[0])
-                @Suppress("DEPRECATION")
-                val installed = manager.getInstalledApplications(0)
-                installed.filter { manager.getLaunchIntentForPackage(it.packageName) != null }.map { app ->
-                    VisualizationApp(app.packageName, app.loadLabel(manager).toString(),
-                        app.loadIcon(manager).toBitmap(96, 96).asImageBitmap())
-                }.sortedWith { first, second ->
-                    collator.compare(first.label, second.label)
-                        .takeIf { it != 0 } ?: first.packageName.compareTo(second.packageName)
-                }
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            CameraViewingDiagnostics.failure("installed_apps", "music_exclusions", error)
-            failed = true
-        }
-    }
-    val visible = remember(apps, query) {
-        apps.orEmpty().filter { it.label.contains(query.trim(), ignoreCase = true) }
-    }
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val focused = LocalWindowInfo.current.isWindowFocused
+        // Re-read on return from the OEM permission prompt, without losing the current selection.
+        LaunchedEffect(context, strings, focused) {
+            if (!focused) return@LaunchedEffect
+            failed = false
+            try {
+                apps = withContext(Dispatchers.IO) {
+                    val manager = context.packageManager
+                    val collator = Collator.getInstance(context.resources.configuration.locales[0])
+                    @Suppress("DEPRECATION")
+                    val installed = manager.getInstalledApplications(0)
+                    installed.filter { manager.getLaunchIntentForPackage(it.packageName) != null }.map { app ->
+                        VisualizationApp(app.packageName, app.loadLabel(manager).toString(),
+                            app.loadIcon(manager).toBitmap(96, 96).asImageBitmap())
+                    }.sortedWith { first, second ->
+                        collator.compare(first.label, second.label)
+                            .takeIf { it != 0 } ?: first.packageName.compareTo(second.packageName)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                CameraViewingDiagnostics.failure("installed_apps", "music_exclusions", error)
+                failed = true
+            }
+        }
+        val visible = remember(apps, query) {
+            apps.orEmpty().filter { it.label.contains(query.trim(), ignoreCase = true) }
+        }
         Column(Modifier.widthIn(max = 720.dp).fillMaxWidth(.94f).fillMaxHeight(.88f)
             .clip(RoundedCornerShape(8.dp)).background(palette.surface)
             .border(1.dp, palette.borderStrong, RoundedCornerShape(8.dp)).padding(18.dp),

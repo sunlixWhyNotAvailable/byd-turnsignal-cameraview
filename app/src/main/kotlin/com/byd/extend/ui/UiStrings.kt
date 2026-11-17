@@ -128,7 +128,7 @@ internal class UiStrings @JvmOverloads constructor(
         text("Камери паркування", "Parking cameras", "泊车摄像头"),
         resource(R.string.distance_widget_title),
         text("Камери заднього ходу", "Reverse cameras", "倒车摄像头"),
-        text("Дзеркало заднього виду", "Rearview mirror", "后视镜"),
+        resource(R.string.rearview_mirror),
         text("Налаштування", "Settings", "设置"),
         text("Відладка", "Debug", "调试"),
     )

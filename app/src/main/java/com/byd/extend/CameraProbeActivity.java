@@ -2391,7 +2391,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private void startUpdateDownload(AppUpdateManager.UpdateInfo info) {
         if (activityDestroyed) return;
-        updateInstallRequested = true;
+        updateInstallRequested = false;
         refreshProductionHeader();
         record("update_download_started", "version", info.version);
         UpdateHintRuntime.get(this).startDownload(info);
@@ -2401,10 +2401,8 @@ public final class CameraProbeActivity extends ComponentActivity
         updateDownloadInFlight = snapshot != null
                 && (snapshot.phase == UpdateHintRuntime.DownloadPhase.DOWNLOADING
                 || snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING);
-        if (snapshot == null || snapshot.phase == UpdateHintRuntime.DownloadPhase.FAILED
-                || snapshot.phase == UpdateHintRuntime.DownloadPhase.CANCELLED) {
-            updateInstallRequested = false;
-        } else updateInstallRequested = true;
+        updateInstallRequested = snapshot != null
+                && snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING;
         if (activityDestroyed) return;
         refreshProductionHeader();
         if (snapshot != null && snapshot.dialogVisible && activityResumed) {
@@ -2414,8 +2412,7 @@ public final class CameraProbeActivity extends ComponentActivity
 
     private boolean showUpdateOperation(UpdateHintRuntime.DownloadSnapshot snapshot) {
         if (snapshot == null || !snapshot.dialogVisible) return false;
-        updateInstallRequested = snapshot.phase != UpdateHintRuntime.DownloadPhase.FAILED
-                && snapshot.phase != UpdateHintRuntime.DownloadPhase.CANCELLED;
+        updateInstallRequested = snapshot.phase == UpdateHintRuntime.DownloadPhase.INSTALLING;
         boolean activeUpdateDialog = runtimeDialogOwner == RuntimeDialogOwner.UPDATE
                 && productionUi != null && productionUi.getState().getDialog() != null;
         if (!canPresentUpdateResult(activeUpdateDialog)) return false;
