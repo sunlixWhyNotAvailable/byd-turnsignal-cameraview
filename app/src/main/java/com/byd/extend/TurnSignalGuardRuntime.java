@@ -64,6 +64,9 @@ final class TurnSignalGuardRuntime {
     private boolean hazardThanksEnabled;
     private int hazardThanksFlashes = 2;
     private boolean hazardThanksOwnsRequest;
+    private String hazardThanksSource;
+    private long hazardReturnModeAt;
+    private int hazardReturnMode;
     private int lastHazardThanksStalk = -1;
     private int lastHazardThanksMode = -1;
     private long runtimeStartedAtMs;
@@ -617,9 +620,9 @@ final class TurnSignalGuardRuntime {
         }
 
         activeHazardThanksWindowStartAt = requestedAtMs;
+        hazardThanksSource = source == null ? "unknown" : source;
         lastHazardThanksStalk = stalk;
         lastHazardThanksMode = mode;
-        hazardThanksOwnsRequest = true;
         emit("hazard_thanks_baseline", "source", source == null ? "unknown" : source,
                 "requested_ms", requestedAtMs,
                 "activation_cutoff_ms", preflightCompletedAtMs,
@@ -629,8 +632,27 @@ final class TurnSignalGuardRuntime {
                 "sound", sound, "stalk", stalk, "mode", mode,
                 "target_flashes", hazardThanks.target(),
                 "generation", hazardThanks.generation());
-        emit("hazard_thanks_started", "source", source == null ? "unknown" : source,
-                "activation_cutoff_ms", preflightCompletedAtMs,
+        if (hazardThanks.readyToActivate()) activateHazardThanks();
+        else emit("hazard_thanks_waiting_for_pause", "direction", mode, "sound", sound,
+                "timeout_ms", HazardThanksSequence.NO_CYCLE_TIMEOUT_MS,
+                "generation", hazardThanks.generation());
+    }
+
+    private void activateHazardThanks() {
+        long now = SystemClock.elapsedRealtime();
+        hazardThanks.activate(now);
+        int direction = hazardThanks.originalDirection();
+        if (sessionActive && sessionDirection != direction) resetSession();
+        if (speedDeferred.direction() != 0) {
+            String cancellation = speedDeferred.direction() == direction
+                    ? speedDeferred.observeBlink(direction, now) : "direction_mismatch";
+            if (cancellation != null) cancelSpeedDeferredSession(cancellation);
+        }
+        clearHazardGuardPendingWork();
+        // SET may reach the OEM even if its reply is lost.
+        hazardThanksOwnsRequest = true;
+        emit("hazard_thanks_started", "source", hazardThanksSource,
+                "activation_cutoff_ms", now,
                 "process_uid", Process.myUid(), "process_pid", Process.myPid(),
                 "context_package", context.getPackageName(),
                 "target_flashes", hazardThanks.target(),
@@ -652,11 +674,13 @@ final class TurnSignalGuardRuntime {
         long generation = hazardThanks.generation();
         long now = SystemClock.elapsedRealtime();
         if (hazardThanks.timeoutDue(generation, now)) {
-            finishHazardThanks("no_complete_cycle_within_timeout", "cancelled", "");
+            finishHazardThanks(hazardThanks.timeoutReason(), "cancelled", "");
             return;
         }
+        long stalkReadStartedMs = SystemClock.elapsedRealtime();
         Integer stalk = readHazardThanksSignal(
                 HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_STALK_FID, "stalk", "active");
+        long stalkReadEndedMs = SystemClock.elapsedRealtime();
         long modeReadStartedMs = SystemClock.elapsedRealtime();
         Integer mode = readHazardThanksSignal(
                 HAZARD_THANKS_LIGHT_DEVICE, HAZARD_THANKS_MODE_FID, "mode", "active");
@@ -674,15 +698,19 @@ final class TurnSignalGuardRuntime {
             return;
         }
         observeHazardThanksManualSignals(stalk, mode, "active_get",
-                modeReadEndedMs, true, true, modeReadStartedMs);
+                stalkReadEndedMs, true, false, stalkReadStartedMs);
         if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
+        observeHazardThanksManualSignals(stalk, mode, "active_get",
+                modeReadEndedMs, false, true, modeReadStartedMs);
+        if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
+        if (hazardThanks.returning()) return;
 
         Integer sound = readHazardThanksSignal(HAZARD_THANKS_SOUND_DEVICE,
                 HAZARD_THANKS_SOUND_FID, "instrument_sound", "active");
         long receivedAt = SystemClock.elapsedRealtime();
         if (!hazardThanks.active() || hazardThanks.generation() != generation) return;
         if (hazardThanks.timeoutDue(generation, receivedAt)) {
-            finishHazardThanks("no_complete_cycle_within_timeout", "cancelled", "");
+            finishHazardThanks(hazardThanks.timeoutReason(), "cancelled", "");
             return;
         }
         if (sound == null) {
@@ -693,6 +721,11 @@ final class TurnSignalGuardRuntime {
         Integer previousSound = hazardThanks.lastSound();
         int previousCycles = hazardThanks.completed();
         int observation = hazardThanks.observeSound(sound, receivedAt);
+        if (observation == HazardThanksSequence.SOUND_AMBIGUOUS) {
+            finishHazardThanks("ambiguous_hazard_cycle", "cancelled",
+                    "sound=" + sound + ", last_mode=" + lastHazardThanksMode);
+            return;
+        }
         if (observation == HazardThanksSequence.SOUND_INVALID) {
             emit("hazard_thanks_input_invalid", "signal", "instrument_sound",
                     "device", HAZARD_THANKS_SOUND_DEVICE,
@@ -704,6 +737,15 @@ final class TurnSignalGuardRuntime {
             emit("hazard_thanks_sound_edge", "previous", previousSound,
                     "value", sound, "completed", hazardThanks.completed(),
                     "received_ms", receivedAt);
+        }
+        if (hazardThanks.readyToActivate()) {
+            if (receivedAt - stalkReadStartedMs > MAX_POLL_GAP_MS) {
+                finishHazardThanks("pause_signal_age_exceeded", "cancelled",
+                        "elapsed_ms=" + (receivedAt - stalkReadStartedMs));
+                return;
+            }
+            activateHazardThanks();
+            return;
         }
         if (hazardThanks.completed() > previousCycles) {
             emit("hazard_thanks_sound_cycle", "completed", hazardThanks.completed(),
@@ -790,6 +832,10 @@ final class TurnSignalGuardRuntime {
 
     private void finishHazardThanks(String reason, String result, String primaryError) {
         if (!hazardThanks.active()) return;
+        if (hazardThanks.returning()) {
+            resolveHazardThanksReturn(reason, primaryError, 0);
+            return;
+        }
         long generation = hazardThanks.generation();
         int completed = hazardThanks.completed();
         int target = hazardThanks.target();
@@ -824,11 +870,21 @@ final class TurnSignalGuardRuntime {
             }
         }
         long windowEnd = SystemClock.elapsedRealtime();
+        boolean awaitReturn = "complete".equals(result) && owned && releaseStatus == 0
+                && hazardThanks.originalDirection() != 0;
+        if (owned && !awaitReturn) discardHazardGuardContinuation(reason);
+        if (awaitReturn) {
+            clearHazardGuardPendingWork();
+            hazardThanks.awaitReturn(windowEnd);
+            emit("hazard_thanks_awaiting_return", "direction", hazardThanks.originalDirection(),
+                    "timeout_ms", HazardThanksSequence.NO_CYCLE_TIMEOUT_MS,
+                    "generation", hazardThanks.generation());
+        }
         if (windowStart > 0) {
             lastHazardThanksWindowStartAt = windowStart;
             lastHazardThanksWindowEndAt = windowEnd;
         }
-        activeHazardThanksWindowStartAt = 0;
+        if (!awaitReturn) activeHazardThanksWindowStartAt = 0;
         if ("complete".equals(result) && owned && releaseStatus == 0) {
             emit("hazard_thanks_result", "result", result, "reason", reason,
                     "completed", completed, "target", target, "generation", generation,
@@ -855,6 +911,44 @@ final class TurnSignalGuardRuntime {
         }
     }
 
+    private void clearHazardGuardPendingWork() {
+        offCandidateAt = 0;
+        offNeutralized = false;
+        confirmationPending = false;
+        confirmationDeadline = 0;
+        pendingNeutralizeReason = null;
+    }
+
+    private void discardHazardGuardContinuation(String reason) {
+        int direction = hazardThanks.originalDirection();
+        if (sessionActive && sessionDirection == direction) resetSession();
+        if (direction != 0 && speedDeferred.direction() == direction)
+            cancelSpeedDeferredSession("hazard_thanks_" + reason);
+        clearHazardGuardPendingWork();
+    }
+
+    private void resolveHazardThanksReturn(String reason, String primaryError, long observedMs) {
+        boolean returned = "direction_returned".equals(reason) && hazardThanks.directionReturned();
+        if (!returned) discardHazardGuardContinuation(reason);
+        else {
+            clearHazardGuardPendingWork();
+            hazardReturnModeAt = observedMs;
+            hazardReturnMode = hazardThanks.originalDirection();
+            if (sessionActive && sessionDirection == hazardThanks.originalDirection())
+                matchingBlinkSeen = true;
+        }
+        emit("hazard_thanks_guard_continuation", "reason", reason,
+                "direction", hazardThanks.originalDirection(), "oem_returned", returned,
+                "guard_retained", returned && sessionActive,
+                "speed_deferred_retained", returned && speedDeferred.direction() != 0,
+                "primary_error", primaryError == null ? "" : primaryError);
+        hazardThanks.cancel();
+        lastHazardThanksWindowStartAt = activeHazardThanksWindowStartAt;
+        lastHazardThanksWindowEndAt = SystemClock.elapsedRealtime();
+        activeHazardThanksWindowStartAt = 0;
+        lastHazardThanksStalk = lastHazardThanksMode = -1;
+    }
+
     private void applyTelemetrySnapshot(
             TurnSignalTelemetryController.Snapshot snapshot,
             TurnSignalTelemetryController.Source source,
@@ -869,7 +963,18 @@ final class TurnSignalGuardRuntime {
 
         ReadResult stalk = new ReadResult(0, snapshot.stalk);
         ReadResult steering = new ReadResult(0, snapshot.steering);
-        ReadResult blink = new ReadResult(0, snapshot.blink);
+        int guardBlink = snapshot.blink;
+        if (hazardReturnModeAt > 0) {
+            boolean freshMode = source != TurnSignalTelemetryController.Source.CALLBACK
+                    || ((liveMask & TurnSignalTelemetryController.LIVE_BLINK) != 0
+                            && observedMs > hazardReturnModeAt);
+            if (freshMode) hazardReturnModeAt = 0;
+            else if (guardBlink == BLINK_HAZARD) {
+                // A queued pre-release callback must not undo the newer direct GET.
+                guardBlink = hazardReturnMode;
+            }
+        }
+        ReadResult blink = new ReadResult(0, guardBlink);
         ReadResult speed = new ReadResult(0, snapshot.speed);
         Float angle = decodeAngle(steering);
         Float speedKph = decodeSpeed(speed);
@@ -878,7 +983,7 @@ final class TurnSignalGuardRuntime {
         boolean gapOk = telemetryController.dataFresh(now);
 
         observeHazardThanksTelemetrySnapshot(
-                stalk.raw, blink.raw, source, liveMask, observedMs);
+                stalk.raw, snapshot.blink, source, liveMask, observedMs);
 
         if (!valid || !gapOk) {
             if (!gapOk) telemetryController.reportFreshnessFailure(now);
@@ -917,7 +1022,8 @@ final class TurnSignalGuardRuntime {
         latestSpeedKph = speedKph;
         latestStalk = stalk.raw;
         if (!wasTelemetryReady && telemetryReady()) telemetryRecoveryCleanup.recovered();
-        if (source == TurnSignalTelemetryController.Source.RECONCILE && conflict) {
+        if (source == TurnSignalTelemetryController.Source.RECONCILE && conflict
+                && !hazardThanks.expectedOwnHazards(stalk.raw, blink.raw)) {
             cancelForReconciliationConflict();
         }
         if (sessionActive && !speedAllowed(latestSpeedKph, maxSpeedKph)) {
@@ -1082,7 +1188,7 @@ final class TurnSignalGuardRuntime {
                 !sessionActive
                         && speedDeferred.direction() == 0
                         && pendingNeutralizeReason == null
-                        && !hazardThanksOwnsRequest
+                        && !hazardThanks.active()
                         && !hazardCleanupPending
                         && !speedLimitCleanupPending)) {
             return;
@@ -1127,7 +1233,7 @@ final class TurnSignalGuardRuntime {
                 !sessionActive
                         && speedDeferred.direction() == 0
                         && pendingNeutralizeReason == null
-                        && !hazardThanksOwnsRequest
+                        && !hazardThanks.active()
                         && !hazardCleanupPending
                         && !speedLimitCleanupPending);
         startupCleanupMarkerPendingGeneration = 0;
@@ -1174,7 +1280,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateGuardDisableReset() {
         if (telemetryController.reconciliationPending()) return;
-        if (hazardThanksOwnsRequest || !guardDisableResetPending || requestedEnabled
+        if (hazardThanks.active() || !guardDisableResetPending || requestedEnabled
                 || !telemetryReady()
                 || !safeGuardDisableResetBlink(latestBlink)) {
             return;
@@ -1199,7 +1305,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateSpeedLimitCleanup() {
         if (telemetryController.reconciliationPending()) return;
-        if (hazardThanksOwnsRequest || !canRunSpeedLimitCleanup(
+        if (hazardThanks.active() || !canRunSpeedLimitCleanup(
                 speedLimitCleanupPending, requestedEnabled,
                 telemetryReady(), latestBlink, latestStalk)) {
             return;
@@ -1226,7 +1332,7 @@ final class TurnSignalGuardRuntime {
         boolean controlIdle = !sessionActive
                 && speedDeferred.direction() == 0
                 && pendingNeutralizeReason == null
-                && !hazardThanksOwnsRequest
+                && !hazardThanks.active()
                 && !hazardCleanupPending
                 && !guardDisableResetPending
                 && !speedLimitCleanupPending
@@ -1320,12 +1426,30 @@ final class TurnSignalGuardRuntime {
     }
 
     private String lastHazardModeRejection = "";
+    private String lastHazardStalkRejection = "";
 
     private void observeHazardThanksManualSignals(
             int stalk, int mode, String source, long observedMs,
             boolean observeStalk, boolean observeMode, long readStartedMs) {
-        if (!hazardThanksOwnsRequest
+        if (!hazardThanks.active()
                 || !hazardThanks.observationIsAfterActivation(observedMs)) return;
+        if (hazardThanks.timeoutDue(hazardThanks.generation(), SystemClock.elapsedRealtime())) {
+            finishHazardThanks(hazardThanks.timeoutReason(), "cancelled", "");
+            return;
+        }
+        if (observeStalk) {
+            String rejection = hazardThanks.stalkObservationRejection(readStartedMs, observedMs);
+            if (rejection != null) {
+                String key = hazardThanks.generation() + ":" + stalk + ":" + rejection;
+                if (!key.equals(lastHazardStalkRejection)) {
+                    lastHazardStalkRejection = key;
+                    emit("hazard_thanks_stalk_observation_rejected", "reason", rejection,
+                            "stalk", stalk, "source", source, "observed_ms", observedMs,
+                            "generation", hazardThanks.generation());
+                }
+                observeStalk = false;
+            }
+        }
         if (observeStalk && stalk != lastHazardThanksStalk) {
             emit("hazard_thanks_stalk_edge", "previous", lastHazardThanksStalk,
                     "value", stalk, "source", source, "observed_ms", observedMs);
@@ -1354,12 +1478,16 @@ final class TurnSignalGuardRuntime {
         String modeCancellation = observeMode ? hazardThanks.observeMode(mode) : null;
         String reason = stalkCancellation != null ? stalkCancellation : modeCancellation;
         if (reason != null) finishHazardThanks(reason, "cancelled", "");
+        else if (observeMode && hazardThanks.returnObserved()) {
+            resolveHazardThanksReturn(hazardThanks.directionReturned()
+                    ? "direction_returned" : "mode_after_release_" + mode, "", observedMs);
+        }
     }
 
     private void observeHazardThanksTelemetrySnapshot(
             int stalk, int mode, TurnSignalTelemetryController.Source source,
             int liveMask, long observedMs) {
-        if (!hazardThanksOwnsRequest
+        if (!hazardThanks.active()
                 || !hazardThanks.observationIsAfterActivation(observedMs)) return;
         if (source != TurnSignalTelemetryController.Source.CALLBACK) return; // Active polls GET both signals.
 
@@ -1367,12 +1495,6 @@ final class TurnSignalGuardRuntime {
         boolean observeStalk = (liveMask & TurnSignalTelemetryController.LIVE_STALK) != 0;
         boolean observeMode = (liveMask & TurnSignalTelemetryController.LIVE_BLINK) != 0;
         if (!observeStalk && !observeMode) return;
-        if (observeStalk && (stalk < 1 || stalk > 5)) {
-            finishHazardThanks("required_telemetry_invalid", "cancelled",
-                    "stalk=" + (observeStalk ? stalk : "not_observed")
-                            + ", mode=" + (observeMode ? mode : "not_observed"));
-            return;
-        }
         observeHazardThanksManualSignals(stalk, mode, source.name(), observedMs,
                 observeStalk, observeMode, -1);
     }
@@ -1387,6 +1509,11 @@ final class TurnSignalGuardRuntime {
     }
 
     private void startSession(int direction, long now) {
+        if (hazardThanks.active()) {
+            emit("guard_suppressed", "reason", "hazard_thanks_in_progress",
+                    "direction", directionName(direction));
+            return;
+        }
         if (!speedAllowed(latestSpeedKph, maxSpeedKph)) {
             deferSessionForSpeed(direction, latestBlink == direction,
                     "activated_above_limit", now);
@@ -1445,6 +1572,8 @@ final class TurnSignalGuardRuntime {
         boolean changed = blink != latestBlink;
         latestBlink = blink;
         if (changed) emitCameraState();
+        // Own hazards temporarily hide the OEM turn; manual/angle/health cancellation still runs.
+        if (hazardThanks.active()) return;
         observeSpeedDeferredBlink(blink, now);
         if (blink == BLINK_HAZARD) {
             if (shouldScheduleHazardCleanup(requestedEnabled, assumedLatchState, blink)
@@ -1503,6 +1632,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateSpeedDeferredSession(long now) {
         if (expireSpeedDeferredSession(now)) return;
+        if (hazardThanks.active()) return;
         if (!canResumeSpeedDeferredSession(speedDeferred.direction(),
                 speedDeferred.blinkSeen(), requestedEnabled, telemetryReady(),
                 latestSpeedKph, maxSpeedKph, latestBlink)) {
@@ -1536,7 +1666,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateCorrection(long now) {
         if (telemetryController.reconciliationPending()) return;
-        if (!sessionActive || hazardThanksOwnsRequest) return;
+        if (!sessionActive || hazardThanks.active()) return;
         if (confirmationPending && now >= confirmationDeadline) {
             int payload = sessionDirection == BLINK_LEFT ? 2
                     : sessionDirection == BLINK_RIGHT ? 3 : LATCH_UNKNOWN;
@@ -1598,7 +1728,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateNeutralization() {
         if (telemetryController.reconciliationPending()) return;
-        if (hazardThanksOwnsRequest || latestBlink != BLINK_OFF) return;
+        if (hazardThanks.active() || latestBlink != BLINK_OFF) return;
 
         if (pendingNeutralizeReason != null) {
             if (!speedAllowed(latestSpeedKph, maxSpeedKph) && latestStalk != 1) return;
@@ -1620,7 +1750,7 @@ final class TurnSignalGuardRuntime {
 
     private void evaluateHazardCleanup() {
         if (telemetryController.reconciliationPending()) return;
-        if (hazardThanksOwnsRequest || !hazardCleanupPending || latestBlink != BLINK_OFF) return;
+        if (hazardThanks.active() || !hazardCleanupPending || latestBlink != BLINK_OFF) return;
         if (latestStalk != 1) {
             cancelHazardCleanup("stalk_not_neutral_after_hazard");
             return;
@@ -1648,7 +1778,7 @@ final class TurnSignalGuardRuntime {
 
     private boolean neutralizeControlLatch(String reason, boolean allowAboveSpeed) {
         if (telemetryController.reconciliationPending()) return false;
-        if (hazardThanksOwnsRequest) {
+        if (hazardThanks.active()) {
             emit("control_latch_reset_deferred", "reason", reason,
                     "owner", "hazard_thanks", "feature_id", TURN_SIGNAL_SET_FID,
                     "payload", 0);
@@ -1692,7 +1822,8 @@ final class TurnSignalGuardRuntime {
     }
 
     private int writeTurnSignal(int payload, String reason) throws Exception {
-        if (hazardThanksOwnsRequest && !reason.startsWith("hazard_thanks_")) {
+        if ((hazardThanks.active() || hazardThanksOwnsRequest)
+                && !reason.startsWith("hazard_thanks_")) {
             throw new IllegalStateException("FID " + TURN_SIGNAL_SET_FID
                     + " owned by thank-you sequence; rejected " + reason);
         }
