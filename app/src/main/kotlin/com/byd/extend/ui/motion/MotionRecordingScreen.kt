@@ -556,9 +556,11 @@ private fun MotionStorageStatus(volume: MotionMediaLibrary.VolumeStats?, statsAv
     }
 }
 
+private fun UiStrings.storageGb(bytes: Long): String =
+    String.format(locale, "%.1f", bytes.toDouble() / MOTION_GB)
+
 @Composable
 private fun MotionStorageSummary(volume: MotionMediaLibrary.VolumeStats?, colors: UiPalette, strings: UiStrings) {
-    fun gb(value: Long) = String.format(Locale.US, "%.1f", value.toDouble() / MOTION_GB)
     val capacity = volume?.capacityBytes?.takeIf { it > 0 }
     if (volume == null || capacity == null) {
         Text(strings.motionText(R.string.motion_storage_numbers_unknown), color = colors.muted, fontSize = 13.sp)
@@ -567,12 +569,16 @@ private fun MotionStorageSummary(volume: MotionMediaLibrary.VolumeStats?, colors
     val own = volume.ownBytes.takeIf { it >= 0 }
     val oem = volume.oemRecorderBytes.takeIf { it >= 0 }
     val other = volume.otherBytes.takeIf { it >= 0 }
-    val free = volume.freeBytes.takeIf { it >= 0 }?.let(::gb) ?: "—"
+    val free = volume.freeBytes.takeIf { it >= 0 }?.let(strings::storageGb) ?: "—"
     val usedKnown = own != null && oem != null && other != null
     val knownRecording = listOfNotNull(own, oem).sum()
     val message = if (usedKnown) R.string.motion_storage_numbers else R.string.motion_storage_numbers_partial
-    val used = if (usedKnown) gb(knownRecording + other!!) else if (own != null || oem != null) gb(knownRecording) else "—"
-    Text(strings.motionText(message, used, free, gb(capacity)), color = colors.muted, fontSize = 13.sp)
+    val used = when {
+        usedKnown -> strings.storageGb(knownRecording + other!!)
+        own != null || oem != null -> strings.storageGb(knownRecording)
+        else -> "—"
+    }
+    Text(strings.motionText(message, used, free, strings.storageGb(capacity)), color = colors.muted, fontSize = 13.sp)
 }
 
 @Composable
@@ -622,7 +628,6 @@ private fun MotionStorageBar(
 
 @Composable
 private fun MotionStorageLegend(volume: MotionMediaLibrary.VolumeStats?, colors: UiPalette, strings: UiStrings) {
-    fun gb(value: Long) = String.format(Locale.US, "%.1f", value.toDouble() / MOTION_GB)
     val labels = listOf(R.string.motion_storage_other, R.string.motion_storage_oem, R.string.motion_storage_own)
     val legendColors = listOf(MotionOtherData, MotionOemData, colors.yellow)
     val usedValues = listOf(volume?.otherBytes, volume?.oemRecorderBytes, volume?.ownBytes)
@@ -641,12 +646,12 @@ private fun MotionStorageLegend(volume: MotionMediaLibrary.VolumeStats?, colors:
                     StorageAmount(
                         Modifier.fillMaxWidth().height(32.dp), usedValues[index]?.takeIf { it >= 0 },
                         color = legendColors[index], isFree = false, hatched = false,
-                        colors = colors, strings = strings, format = { gb(it) })
+                        colors = colors, strings = strings)
                     StorageAmount(
                         Modifier.fillMaxWidth().height(32.dp), freeValues[index]?.takeIf { it >= 0 },
                         color = if (index == 0) Color.Transparent else legendColors[index],
                         isFree = true, hatched = index != 0,
-                        colors = colors, strings = strings, format = { gb(it) })
+                        colors = colors, strings = strings)
                 }
             }
         }
@@ -658,14 +663,14 @@ private fun MotionStorageLegend(volume: MotionMediaLibrary.VolumeStats?, colors:
 
 @Composable
 private fun StorageAmount(modifier: Modifier, bytes: Long?, color: Color, isFree: Boolean, hatched: Boolean,
-    colors: UiPalette, strings: UiStrings, format: (Long) -> String) {
+    colors: UiPalette, strings: UiStrings) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Canvas(Modifier.size(12.dp).border(1.dp, colors.borderStrong, RoundedCornerShape(2.dp))) {
             if (hatched) motionHatch(color, 0f, size.width) else if (color != Color.Transparent) drawRect(color)
         }
         Spacer(Modifier.width(4.dp))
         Text(strings.motionText(if (isFree) R.string.motion_storage_free_value else R.string.motion_storage_used_value,
-            bytes?.let(format) ?: "—"), color = colors.muted, fontSize = 11.sp, maxLines = 2)
+            bytes?.let(strings::storageGb) ?: "—"), color = colors.muted, fontSize = 11.sp, maxLines = 2)
     }
 }
 

@@ -69,10 +69,10 @@
     <string name="motion_archive_empty">"No Motion recordings are available for this date and filter."</string>
     <string name="motion_archive_no_storage">"No archive storage is mounted. Connect storage to record or browse clips."</string>
     <string name="motion_archive_unavailable">"This recording is currently unavailable."</string>
-    <string name="motion_archive_events">"%1$d recordings · %2$d yellow · %3$d red"</string>
+    <string name="motion_archive_events">"Recordings: %1$d · Yellow: %2$d · Red: %3$d"</string>
     <string name="motion_archive_yellow_count">"Yellow: %1$d"</string>
     <string name="motion_archive_red_count">"Red: %1$d"</string>
-    <string name="motion_archive_delete_confirm">"Delete %1$d selected Motion recording(s)? This cannot be undone."</string>
+    <string name="motion_archive_delete_confirm">"Delete selected recordings (%1$d)? This cannot be undone."</string>
     <string name="motion_archive_delete_result">"Deleted %1$d · failed %2$d · skipped %3$d"</string>
     <string name="motion_archive_size">"%1$s GB"</string>
     <string name="motion_archive_yellow">"Yellow event"</string>

@@ -112,7 +112,7 @@ internal fun LogShareUi(colors: UiPalette, strings: UiStrings) {
         SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.getDefault()).format(Date())
     fun summary(job: LogShareRuntime.Job): String {
         val seconds = ((if (job.active) now else job.endedAt.takeIf { it > 0 } ?: now) - job.startedAt).coerceAtLeast(0) / 1000
-        return strings.resource(R.string.log_share_card_summary, String.format(Locale.ROOT, "%.2f", job.bytes / 1_000_000.0), seconds)
+        return strings.resource(R.string.log_share_card_summary, String.format(strings.locale, "%.2f", job.bytes / 1_000_000.0), seconds)
     }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 92.dp)

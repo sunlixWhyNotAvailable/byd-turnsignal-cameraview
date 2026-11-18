@@ -27,6 +27,7 @@ internal class UiStrings @JvmOverloads constructor(
     }
     private val resolvedIds = mutableMapOf<String, Int>()
 
+    val locale: Locale = AppLanguage.locale(language.wire())
     val ukrainian: Boolean get() = language == UiLanguage.Ukrainian
     val chinese: Boolean get() = language == UiLanguage.Chinese
     fun resource(id: Int, vararg arguments: Any): String = resources?.let {
