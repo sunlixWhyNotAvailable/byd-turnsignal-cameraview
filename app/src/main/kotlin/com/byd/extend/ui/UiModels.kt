@@ -2,6 +2,7 @@ package com.byd.extend.ui
 
 import androidx.compose.runtime.Immutable
 import com.byd.extend.AvasEngineSettings
+import com.byd.extend.MusicSettings
 import com.byd.extend.RearviewMirrorSettings
 import com.byd.extend.CameraButtonBindings
 import com.byd.extend.UpdateHintAppearance
@@ -460,8 +461,8 @@ data class HazardThanksUiState(
 @Immutable
 data class MusicUiState(
     val enabled: Boolean = false,
-    val showArtwork: Boolean = false,
-    val showPlayerIcon: Boolean = false,
+    val showArtwork: Boolean = MusicSettings.DEFAULT_SHOW_ARTWORK,
+    val showPlayerIcon: Boolean = MusicSettings.DEFAULT_SHOW_PLAYER_ICON,
     val excludedApps: Set<String> = emptySet(),
     val captureFocusOnOpen: Boolean = true,
     val engineVisualization: Boolean = false,

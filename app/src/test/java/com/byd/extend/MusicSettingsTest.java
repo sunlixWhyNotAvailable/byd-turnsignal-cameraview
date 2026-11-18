@@ -27,8 +27,13 @@ public class MusicSettingsTest {
     @Test public void musicChoicesSurviveReopenAndOlderImportsAndRejectMalformedImports() {
         Context app = RuntimeEnvironment.getApplication();
         SharedPreferences settings = app.getSharedPreferences("music-test", Context.MODE_PRIVATE);
-        assertFalse(settings.getBoolean(MusicSettings.ARTWORK, false));
-        assertFalse(settings.getBoolean(MusicSettings.PLAYER_ICON, false));
+        var music = ProductionStateSnapshot.readProductionUiState(settings, false, false).getSignals().getMusic();
+        assertTrue(music.getShowArtwork());
+        assertTrue(music.getShowPlayerIcon());
+        settings.edit().putBoolean(MusicSettings.ARTWORK, false).commit();
+        music = ProductionStateSnapshot.readProductionUiState(settings, false, false).getSignals().getMusic();
+        assertFalse(music.getShowArtwork());
+        assertTrue(music.getShowPlayerIcon());
         Set<String> packages = Set.of("com.player.one", "com.player.two");
         String xml = "<map><boolean name=\"music_show_artwork\" value=\"true\"/>"
                 + "<boolean name=\"music_show_player_icon\" value=\"false\"/>"

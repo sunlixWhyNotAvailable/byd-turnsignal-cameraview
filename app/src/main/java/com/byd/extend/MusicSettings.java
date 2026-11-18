@@ -11,6 +11,8 @@ import java.util.Set;
 public final class MusicSettings {
     public static final String ARTWORK = "music_show_artwork";
     public static final String PLAYER_ICON = "music_show_player_icon";
+    public static final boolean DEFAULT_SHOW_ARTWORK = true;
+    public static final boolean DEFAULT_SHOW_PLAYER_ICON = true;
     public static final String EXCLUDED = "music_visualization_excluded_apps";
 
     private MusicSettings() {}

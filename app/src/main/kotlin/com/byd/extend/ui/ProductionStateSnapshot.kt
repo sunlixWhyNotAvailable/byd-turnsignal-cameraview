@@ -78,8 +78,8 @@ private fun readSignals(preferences: SharedPreferences) = SignalsUiState(
     ),
     music = MusicUiState(
         enabled = preferences.getBoolean("music_visualizer_enabled", false),
-        showArtwork = preferences.getBoolean(com.byd.extend.MusicSettings.ARTWORK, false),
-        showPlayerIcon = preferences.getBoolean(com.byd.extend.MusicSettings.PLAYER_ICON, false),
+        showArtwork = preferences.getBoolean(MusicSettings.ARTWORK, MusicSettings.DEFAULT_SHOW_ARTWORK),
+        showPlayerIcon = preferences.getBoolean(MusicSettings.PLAYER_ICON, MusicSettings.DEFAULT_SHOW_PLAYER_ICON),
         excludedApps = com.byd.extend.MusicSettings.excluded(preferences),
         captureFocusOnOpen = preferences.getBoolean("music_capture_focus_on_open", true),
         engineVisualization = preferences.getBoolean("music_engine_visualization_enabled", false),
