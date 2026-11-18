@@ -126,6 +126,7 @@ public final class CameraHelperService extends Service {
             "com.byd.extend.action.AVAS_START_AUDITION";
     private static final String ACTION_AVAS_STOP_AUDITION =
             "com.byd.extend.action.AVAS_STOP_AUDITION";
+    private static final String EXTRA_FOREGROUND_START = "foreground_start";
     static final String EXTRA_ENABLED = "enabled";
     static final String EXTRA_REASON = "reason";
     static final String EXTRA_FLUSH_RECEIVER = "flush_receiver";
@@ -527,8 +528,11 @@ public final class CameraHelperService extends Service {
         Intent intent = new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_REASON, reason == null ? "unknown" : reason);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
-        else context.startService(intent);
+        requestForegroundStart(context, intent);
+    }
+
+    private static void requestForegroundStart(Context context, Intent intent) {
+        context.startForegroundService(intent.putExtra(EXTRA_FOREGROUND_START, true));
     }
 
     static void activityOpened(Context context) {
@@ -675,14 +679,12 @@ public final class CameraHelperService extends Service {
         Intent intent = new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_SETTINGS_RELOADED)
                 .putExtra(EXTRA_FULL_IMPORT, fullImport);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
-        else context.startService(intent);
+        requestForegroundStart(context, intent);
     }
 
     static void diagnosticSettingsChanged(Context context) {
         Intent intent = new Intent(context, CameraHelperService.class).setAction(ACTION_DIAGNOSTICS_CHANGED);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
-        else context.startService(intent);
+        requestForegroundStart(context, intent);
     }
 
     static void cameraWarningSettingsChanged(Context context) {
@@ -852,8 +854,7 @@ public final class CameraHelperService extends Service {
                 .setAction(ACTION_WEATHER_REFRESH)
                 .putExtra(EXTRA_WEATHER_REASON, reason == null ? "manual" : reason)
                 .putExtra(EXTRA_WEATHER_RECEIVER, receiver);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
-        else context.startService(intent);
+        requestForegroundStart(context, intent);
     }
 
     static boolean canRouteWeatherRefresh(
@@ -882,7 +883,7 @@ public final class CameraHelperService extends Service {
         Intent intent = new Intent(context, CameraHelperService.class)
                 .setAction(ACTION_AUTO_START_CHANGED)
                 .putExtra(EXTRA_ENABLED, enabled);
-        if (enabled && Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent);
+        if (enabled) requestForegroundStart(context, intent);
         else context.startService(intent);
     }
 
@@ -976,7 +977,7 @@ public final class CameraHelperService extends Service {
                 "auto_start", GuardRecovery.isAutoStartEnabled(this),
                 "user_shutdown", GuardRecovery.isUserShutdownActive(this));
         if (GuardRecovery.shouldRecover(this) && !LegacySettingsImporter.blocksRuntime(this)) {
-            startForegroundRuntime("on_create_recovery", "onCreate", "service_create", -1);
+            startForegroundRuntime("on_create_recovery", "onCreate", "service_create", -1, false);
         } else if (GuardRecovery.shouldRecover(this)) {
             lifecycle("runtime_blocked", "reason", "legacy_handover");
         }
@@ -992,6 +993,12 @@ public final class CameraHelperService extends Service {
                 "action", action == null ? "" : action,
                 "reason", command.reason, "operation", "service_lifecycle", "phase", "entry",
                 "start_id", startId, "flags", flags);
+        boolean foregroundRequested = intent != null && intent.getBooleanExtra(EXTRA_FOREGROUND_START, false);
+        boolean wasForeground = foreground;
+        if (foregroundRequested) {
+            // Each startForegroundService delivery has its own acknowledgement, even after onCreate.
+            startForegroundRuntime(command.reason, action, "foreground_service_start", startId, true);
+        }
         boolean blocked = LegacySettingsImporter.blocksRuntime(this);
         boolean targetAutoStart = ACTION_AUTO_START_CHANGED.equals(action)
                 ? command.enabled : GuardRecovery.isAutoStartEnabled(this);
@@ -1003,9 +1010,11 @@ public final class CameraHelperService extends Service {
                         || GuardRecovery.hasActiveSession(this));
         boolean manualRuntime = !targetUserShutdown
                 && (activityVisible || ACTION_ACTIVITY_OPEN.equals(action));
-        if ((willRecover || helperRuntimeStarted || manualRuntime) && !blocked) {
-            startForegroundRuntime(command.reason, action == null ? "" : action,
-                    "service_start", startId);
+        boolean keepForeground = (willRecover || helperRuntimeStarted || manualRuntime) && !blocked;
+        if (!foregroundRequested && keepForeground) {
+            startForegroundRuntime(command.reason, action, "service_start", startId, false);
+        } else if (foregroundRequested && !keepForeground && !wasForeground) {
+            stopForegroundRuntime(command.reason, action, "foreground_start_not_retained", startId, null, null);
         }
         if (!postRuntime(() -> handleStartCommand(command))) {
             stopSelf(startId);
@@ -1992,10 +2001,10 @@ public final class CameraHelperService extends Service {
     }
 
     private void startForegroundRuntime(
-            String reason, String action, String requestOperation, int requestStartId) {
+            String reason, String action, String requestOperation, int requestStartId, boolean acknowledgeStart) {
         String operationId = nextForegroundOperationId();
         boolean foregroundBefore = foreground;
-        if (foregroundBefore) {
+        if (foregroundBefore && !acknowledgeStart) {
             recordForegroundTransition(operationId, "startForeground", requestOperation,
                     "start", action, reason, requestStartId, "call", "skipped",
                     foregroundBefore, foregroundBefore, null, null,
@@ -2146,6 +2155,7 @@ public final class CameraHelperService extends Service {
                         AppLanguage.read(getSharedPreferences("settings", MODE_PRIVATE)))
                         .getString(R.string.service_active))
                 .setContentIntent(pending)
+                .setOnlyAlertOnce(true)
                 .setOngoing(true)
                 .build();
     }
