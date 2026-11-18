@@ -8,6 +8,27 @@ public final class WeatherLocationSourcesTest {
     private static final long NOW = 200_000;
     private static final long UTC = Instant.parse("2026-11-10T10:12:00Z").toEpochMilli();
 
+    @Test public void candidateJournalKeepsNewFixesAndExpiryWithoutRepeatingTheSameReading() {
+        WeatherLocationSources sources = new WeatherLocationSources();
+        WeatherCandidateJournal journal = new WeatherCandidateJournal();
+        java.util.List<java.util.List<Object>> rows = new java.util.ArrayList<>();
+        java.util.function.BiConsumer<String,Object[]> emit = (kind, fields) -> rows.add(java.util.Arrays.asList(fields));
+        for (long offset : new long[]{0, 1, 10_001, 10_002, 10_003}) {
+            if (offset <= 1 || offset == 10_002) {
+                long sampleOffset = offset == 10_002 ? offset : 0;
+                sources.accept(fix("gps", false, 5, -sampleOffset, UTC + sampleOffset), NOW + offset);
+            }
+            long now = NOW + offset;
+            long revision = offset == 10_003 ? 2 : 1;
+            journal.write(sources.fixes(), sources, sources.select(now, UTC + offset).fix,
+                    now, UTC + offset, revision, emit);
+        }
+        assertEquals(4, rows.size());
+        assertTrue(rows.get(1).contains("gps_age_or_coordinates"));
+        assertTrue(rows.get(2).contains(UTC + 10_002));
+        assertTrue(rows.get(3).contains(UTC + 10_002));
+    }
+
     private static WeatherLocationSources.Fix fix(String channel, boolean mock, float accuracy, long age, long utc) {
         return new WeatherLocationSources.Fix(channel, "gps", mock, true, 50, 30, accuracy, NOW - age, utc);
     }

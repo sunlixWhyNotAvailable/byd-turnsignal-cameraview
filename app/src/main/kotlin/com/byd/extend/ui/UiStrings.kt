@@ -29,7 +29,9 @@ internal class UiStrings @JvmOverloads constructor(
 
     val ukrainian: Boolean get() = language == UiLanguage.Ukrainian
     val chinese: Boolean get() = language == UiLanguage.Chinese
-    fun resource(id: Int, vararg arguments: Any): String = resources?.getString(id, *arguments) ?: ""
+    fun resource(id: Int, vararg arguments: Any): String = resources?.let {
+        if (arguments.isEmpty()) it.getString(id) else it.getString(id, *arguments)
+    } ?: ""
     fun text(ukrainianText: String, englishText: String): String =
         packaged(ukrainianText, englishText) ?: if (ukrainian) ukrainianText else englishText
     fun text(ukrainianText: String, englishText: String, chineseText: String): String =

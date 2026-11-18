@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -223,6 +224,22 @@ final class MusicArtworkRuntime {
         return matches.isEmpty() ? null : new Selection(matches.get(0), matches.get(0).getMetadata(), true, false);
     }
 
+    static final class RelayImages {
+        private final AtomicBoolean awaitingDispatch = new AtomicBoolean(true);
+        private final File directory;
+
+        RelayImages(File directory) { this.directory = directory; }
+
+        boolean beginDispatch() { return awaitingDispatch.compareAndSet(true, false); }
+
+        boolean releaseIfUnsent() throws IOException {
+            // Claim an unsent request before cleaning its files, even if service lookup returns late.
+            if (!awaitingDispatch.getAndSet(false)) return false;
+            ArtworkFiles.pruneImages(directory, true);
+            return true;
+        }
+    }
+
     private void relay(long epoch) throws Exception {
         Context shell = TurnSignalShellMain.shellContext(context);
         int user = currentUser();
@@ -231,7 +248,8 @@ final class MusicArtworkRuntime {
         String prefix = MusicArtworkWorker.imagePrefix(user, imageId);
         File directory = new File(prefix);
         Images images = new Images(shell, directory, user, epoch);
-        boolean launched = false, finished = false;
+        RelayImages relayImages = new RelayImages(directory);
+        boolean finished = false;
         try (ServerSocket server = new ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))) {
             JSONObject first = images.state();
             if (!first.optBoolean("active")) return;
@@ -241,10 +259,10 @@ final class MusicArtworkRuntime {
             String command = bootstrap(dex, token, imageId, user, server.getLocalPort(), System.currentTimeMillis() + 30_000);
             AtomicReference<Throwable> launchFailure = new AtomicReference<>();
             launcher = new Thread(() -> {
-                try { cells(command); }
+                try { cells(command, relayImages); }
                 catch (Throwable failure) { launchFailure.set(failure); }
             }, "byd-artwork-oem-launch");
-            launcher.setDaemon(true); launcher.start(); launched = true;
+            launcher.setDaemon(true); launcher.start();
             server.setSoTimeout(500);
             long deadline = SystemClock.elapsedRealtime() + 10_000;
             while (SystemClock.elapsedRealtime() < deadline) {
@@ -324,9 +342,10 @@ final class MusicArtworkRuntime {
             }
             throw new IOException("Artwork executor did not connect within 10s; launch expired or denied, cause not established");
         } finally {
-            if (!launched) try { images.prune(null); }
-            catch (Throwable secondary) { error("image_cleanup_secondary", secondary); }
-            if (launched && !finished) events.accept("music_artwork_release_pending", new Object[]{"reason", "executor_result_unavailable"});
+            try {
+                if (!finished && !relayImages.releaseIfUnsent())
+                    events.accept("music_artwork_release_pending", new Object[]{"reason", "executor_result_unavailable"});
+            } catch (Throwable secondary) { error("image_cleanup_secondary", secondary); }
         }
     }
 
@@ -433,13 +452,14 @@ final class MusicArtworkRuntime {
         StringWriter text = new StringWriter(); failure.printStackTrace(new PrintWriter(text)); return text.toString();
     }
 
-    private static void cells(String command) throws Exception {
+    private static void cells(String command, RelayImages relayImages) throws Exception {
         IBinder binder = (IBinder) Class.forName("android.os.ServiceManager").getMethod("checkService", String.class).invoke(null, "cellsservice_host");
         if (binder == null) throw new IOException("cellsservice_host absent or access denied; reason not distinguished");
         if (!"aidl.cells.ICellsService".equals(binder.getInterfaceDescriptor())) throw new IOException("Unexpected cellsservice_host descriptor");
         Parcel input = Parcel.obtain(), output = Parcel.obtain();
         try {
             input.writeInterfaceToken("aidl.cells.ICellsService"); input.writeString(command);
+            if (!relayImages.beginDispatch()) return;
             if (!binder.transact(3, input, output, 0)) throw new IOException("Artwork OEM transaction 3 rejected");
             output.readException(); int status = output.readInt();
             if (status != 0) throw new IOException("Artwork OEM bootstrap wait_status=" + status);

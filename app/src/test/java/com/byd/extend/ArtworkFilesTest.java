@@ -11,6 +11,21 @@ import static org.junit.Assert.*;
 
 public class ArtworkFilesTest {
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
+    @Test public void abandonedRelayDeletesOnlyUnsentImagesAndClosesLateDispatch() throws Exception {
+        File unsent = temporary.newFolder("unsent");
+        File sent = temporary.newFolder("sent");
+        image(unsent, 'a');
+        File cover = image(sent, 'b');
+        MusicArtworkRuntime.RelayImages abandoned = new MusicArtworkRuntime.RelayImages(unsent);
+        MusicArtworkRuntime.RelayImages dispatched = new MusicArtworkRuntime.RelayImages(sent);
+        assertTrue(dispatched.beginDispatch());
+        assertTrue(abandoned.releaseIfUnsent());
+        assertFalse(abandoned.beginDispatch());
+        assertFalse(unsent.exists());
+        assertFalse(dispatched.releaseIfUnsent());
+        assertTrue(cover.isFile());
+    }
+
     private File image(File directory, char digit) throws IOException {
         return Files.write(new File(directory, String.valueOf(digit).repeat(64) + ".png").toPath(), new byte[]{1}).toFile();
     }

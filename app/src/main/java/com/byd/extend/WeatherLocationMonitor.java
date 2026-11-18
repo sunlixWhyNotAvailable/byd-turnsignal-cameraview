@@ -29,6 +29,7 @@ final class WeatherLocationMonitor {
     private final WeatherLocationSources sources = new WeatherLocationSources();
     private final Set<String> subscribed = new HashSet<>(), errors = new HashSet<>();
     private final Map<String, WeatherLocationSources.Fix> incoming = new HashMap<>();
+    private final WeatherCandidateJournal candidateJournal = new WeatherCandidateJournal();
     private boolean drainQueued, running, nmeaSubscribed;
     private long incomingEpoch;
     private volatile boolean wanted, closed;
@@ -224,14 +225,7 @@ final class WeatherLocationMonitor {
             event("weather_flp_data", "state", dataState);
         }
         if (DiagnosticLogPolicy.extended()) {
-            for (WeatherLocationSources.Fix fix : candidates) {
-                event("weather_location_candidate", "channel", fix.channel, "provider", fix.provider,
-                        "mock", fix.mock, "latitude", fix.latitude, "longitude", fix.longitude,
-                        "accuracy_m", fix.accuracy, "elapsed_ms", fix.elapsedMs, "utc_ms", fix.utcMs,
-                        "age_ms", now - fix.elapsedMs, "network_time_known", utcNow != null,
-                        "gps_rejection", fix.gps && !fix.mock ? sources.gpsRejection(fix, now, utcNow) : null,
-                        "selected", next.fix == fix);
-            }
+            candidateJournal.write(candidates, sources, next.fix, now, utcNow, DiagnosticLogPolicy.revision(), events);
         }
         handler.removeCallbacks(expiry);
         long nextCheck = next.nextCheckMs;
@@ -244,6 +238,7 @@ final class WeatherLocationMonitor {
         handler.removeCallbacks(expiry);
         synchronized (incoming) { incoming.clear(); }
         sources.clear();
+        candidateJournal.clear();
         selection = new WeatherLocationSources.Selection(null, "inactive", selection.revision + 1, Long.MAX_VALUE);
         if (manager != null) {
             try { manager.removeUpdates(locations); }
