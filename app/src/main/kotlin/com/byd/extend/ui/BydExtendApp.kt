@@ -90,11 +90,15 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -966,7 +970,6 @@ private fun AppDialog(
     val captureDialog = state.kind == DialogKind.ReverseButtonCapture
     val dismissCommand = if (state.kind == DialogKind.Progress) CommandId.CancelOperation
         else CommandId.DismissDialog
-    val markdownText = remember(state.markdown) { releaseNotesText(state.markdown) }
     val notesScroll = rememberScrollState()
     Dialog(onDismissRequest = {
         if (state.cancellable) onAction(BydExtendUiAction.Run(dismissCommand))
@@ -1040,7 +1043,7 @@ private fun AppDialog(
                 if (!state.updatePresentation || state.kind != DialogKind.Progress)
                     Text(state.message, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 if (state.markdown.isNotEmpty()) {
-                    Text(markdownText, color = colors.text,
+                    Text(remember(state.markdown, colors) { releaseNotesText(state.markdown, colors) }, color = colors.text,
                         fontSize = 14.sp, lineHeight = 21.sp)
                 }
                 if (state.archiveProcessedBytes != null) {
@@ -1127,7 +1130,7 @@ private fun UpdateProgressBar(progress: Float?, colors: UiPalette) {
     }
 }
 
-private fun releaseNotesText(markdown: String): AnnotatedString = buildAnnotatedString {
+private fun releaseNotesText(markdown: String, colors: UiPalette): AnnotatedString = buildAnnotatedString {
     ReleaseNotesMarkdown.parseBlocks(markdown).forEachIndexed { index, block ->
         if (index > 0) append('\n')
         val headingStyle = when (block.level()) {
@@ -1144,8 +1147,9 @@ private fun releaseNotesText(markdown: String): AnnotatedString = buildAnnotated
         }
         append(marker)
         if (block.type() != ReleaseNotesMarkdown.BlockType.DIVIDER) {
-            if (headingStyle == null) appendMarkdownInline(block.text())
-            else withStyle(headingStyle) { appendMarkdownInline(block.text()) }
+            val content = updateMarkdownInline(block.text(), colors)
+            if (headingStyle == null) append(content)
+            else withStyle(headingStyle) { append(content) }
         }
     }
 }
@@ -1213,30 +1217,36 @@ private fun UpdateMarkdownTextLine(
         fontSize = fontSize, fontWeight = fontWeight, lineHeight = 18.sp)
 }
 
-private fun updateMarkdownInline(text: String, colors: UiPalette): AnnotatedString =
+internal fun updateMarkdownInline(text: String, colors: UiPalette): AnnotatedString =
     buildAnnotatedString {
         ReleaseNotesMarkdown.parseInline(text).forEach { inline ->
             when (inline.type()) {
                 ReleaseNotesMarkdown.InlineType.BOLD ->
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(inline.text()) }
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { appendWebLinks(inline.text(), colors) }
                 ReleaseNotesMarkdown.InlineType.CODE -> withStyle(SpanStyle(
                     fontFamily = FontFamily.Monospace,
                     background = colors.disabled,
                     color = colors.text,
                 )) { append(inline.text()) }
-                else -> append(inline.text())
+                else -> appendWebLinks(inline.text(), colors)
             }
         }
     }
 
-private fun AnnotatedString.Builder.appendMarkdownInline(text: String) {
-    ReleaseNotesMarkdown.parseInline(text).forEach { inline ->
-        when (inline.type()) {
-            ReleaseNotesMarkdown.InlineType.BOLD ->
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(inline.text()) }
-            ReleaseNotesMarkdown.InlineType.CODE ->
-                withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(inline.text()) }
-            else -> append(inline.text())
-        }
+private const val WEB_URL = """https?://(?:[^\s()<>"]++|\([^\s()<>"]*+\))++"""
+private val patchNoteLink = Regex("""\[([^\[\]\n]+)]\(($WEB_URL)\)|($WEB_URL)""", RegexOption.IGNORE_CASE)
+
+private fun AnnotatedString.Builder.appendWebLinks(text: String, colors: UiPalette) {
+    var offset = 0
+    for (match in patchNoteLink.findAll(text)) {
+        val label = match.groups[1]?.value
+        val url = match.groups[2]?.value ?: match.value.trimEnd('.', ',', ';', ':', '!', '?', '。', '，')
+        val uri = android.net.Uri.parse(url)
+        if (uri.host.isNullOrEmpty()) continue
+        append(text, offset, match.range.first)
+        val style = TextLinkStyles(SpanStyle(color = colors.accent, textDecoration = TextDecoration.Underline))
+        withLink(LinkAnnotation.Url(url, style)) { append(label ?: url) }
+        offset = if (label == null) match.range.first + url.length else match.range.last + 1
     }
+    append(text, offset, text.length)
 }
