@@ -20,15 +20,17 @@ final class ContinuousLogcatRecorder implements AutoCloseable {
     static final String DIRECTORY = "/data/local/tmp/bydextend_diagnostic_logcat";
     static final String LOG_PATH = DIRECTORY + "/logcat.txt";
     static final String STATUS_PATH = DIRECTORY + "/status.txt";
-    static final String SIZE_COMMAND = "stat -c %s '" + LOG_PATH + "' 2>/dev/null";
+    static final String MISSING_SIZE = "missing";
+    // Only stat's ENOENT means an optional recording is absent. Preserve all other diagnostics.
+    static final String SIZE_COMMAND = "if size=$(LC_ALL=C stat -c %s '" + LOG_PATH + "' 2>&1); then "
+            + "printf '%s\\n' \"$size\"; else rc=$?; case \"$size\" in "
+            + "*': No such file or directory') echo " + MISSING_SIZE + ";; "
+            + "*) printf '%s\\n' \"$size\" >&2; (exit \"$rc\");; esac; fi";
 
     static String snapshotCommand(long bytes) {
         if (bytes < 0) throw new IllegalArgumentException("Negative snapshot size");
         return "head -c " + bytes + " '" + LOG_PATH + "' 2>/dev/null";
     }
-    static final String SNAPSHOT_COMMAND = "log_file='" + LOG_PATH
-            + "'; log_size=$(stat -c %s \"$log_file\" 2>/dev/null)"
-            + " && head -c \"$log_size\" \"$log_file\" 2>/dev/null";
     static final long MIN_FREE_BYTES = 512L * 1024L * 1024L;
     private static final int BUFFER_BYTES = 64 * 1024;
     private final File directory;

@@ -27,6 +27,57 @@ public class LogShareArchiveTest {
         }
     }
 
+    @Test public void continuousLogcatExportsRecordedBytesAndOmitsClearedFile() throws Exception {
+        File cache = temporary.newFolder("cache");
+        File logs = temporary.newFolder("recorder");
+        File log = new File(logs, "logcat.txt");
+        byte[] recorded = "recorded line\n".getBytes(StandardCharsets.UTF_8);
+        Files.write(log.toPath(), recorded);
+        final String entryName = "system/logcat-continuous.txt";
+        for (String state : new String[]{"included", "missing", "error"}) {
+            if (state.equals("missing")) {
+                assertEquals(1, new ContinuousLogcatRecorder(logs, "boot", "test", null).clearStored());
+            }
+            // A real ENOTDIR must retain its diagnostic, even when the same file was just cleared.
+            String path = state.equals("error") ? "./status.txt/logcat.txt" : "./logcat.txt";
+            File archive = DiagnosticLogExporter.export(cache, DiagnosticLogExporter.snapshot(), identity, command -> {
+                if (!command.contains(ContinuousLogcatRecorder.LOG_PATH)) {
+                    throw new UnsupportedOperationException("Android system collector unavailable on host");
+                }
+                try {
+                    Process process = new ProcessBuilder("sh").directory(logs).redirectErrorStream(true).start();
+                    try (OutputStream script = process.getOutputStream()) {
+                        script.write(command.replace(ContinuousLogcatRecorder.LOG_PATH, path)
+                                .getBytes(StandardCharsets.UTF_8));
+                    }
+                    String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                    int exit = process.waitFor();
+                    return exit == 0 ? DiagnosticLogExporter.CommandResult.success(output)
+                            : DiagnosticLogExporter.CommandResult.failure(output, null, exit);
+                } catch (IOException error) {
+                    throw new UncheckedIOException(error);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }, 123456789L);
+            try (ZipFile zip = new ZipFile(archive)) {
+                org.json.JSONArray sources = new JSONObject(new String(entry(archive, "manifest.json"),
+                        StandardCharsets.UTF_8)).getJSONArray("sources");
+                JSONObject record = null;
+                for (int i = 0; i < sources.length(); i++) {
+                    if (entryName.equals(sources.getJSONObject(i).getString("entry"))) record = sources.getJSONObject(i);
+                }
+                assertNotNull(record);
+                assertEquals(record.toString(), state, record.getString("status"));
+                if (state.equals("included")) assertArrayEquals(recorded, entry(archive, entryName));
+                else assertNull(zip.getEntry(entryName));
+                if (state.equals("error")) assertTrue(record.toString(), record.getString("error").contains("Not a directory"));
+                else assertTrue(record.isNull("error"));
+            }
+        }
+    }
+
     @Test public void snapshotKeepsWholeRowsAndNextExportKeepsPreviousArchive() throws Exception {
         File logs = temporary.newFolder("logs");
         File file = new File(logs, "guard-camera-session.jsonl");

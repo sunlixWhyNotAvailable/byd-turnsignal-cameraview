@@ -103,7 +103,7 @@ final class DiagnosticLogExporter {
                     "system/logcat-continuous-status.txt",
                     "cat " + ContinuousLogcatRecorder.STATUS_PATH + " 2>/dev/null"),
             new CollectorSpec(
-                    "system/logcat-continuous.txt", ContinuousLogcatRecorder.SNAPSHOT_COMMAND, true)
+                    "system/logcat-continuous.txt", ContinuousLogcatRecorder.SIZE_COMMAND, true)
     };
 
     private DiagnosticLogExporter() {}
@@ -306,13 +306,33 @@ final class DiagnosticLogExporter {
                 long bound = -1;
                 String command = collector.command;
                 progress.stage(collector.entry, -1);
-                if (collector.command.equals(ContinuousLogcatRecorder.SNAPSHOT_COMMAND)) {
+                if (command.equals(ContinuousLogcatRecorder.SIZE_COMMAND)) {
+                    SourceRecord probe = new SourceRecord("system", collector.entry, collector.entry, -1);
                     try {
-                        CommandResult size = commandRunner.run(ContinuousLogcatRecorder.SIZE_COMMAND);
-                        if (size != null && size.ok) bound = Long.parseLong(size.output.trim());
-                    } catch (Exception unavailable) { /* Keep truthful unknown progress and the original collector. */ }
-                    if (bound >= 0) command = ContinuousLogcatRecorder.snapshotCommand(bound);
-                    progress.stage(collector.entry, bound >= 0 ? Math.addExact(progress.bytes, bound) : -1);
+                        CommandResult size = commandRunner.run(command);
+                        progress.check();
+                        if (size == null) throw new IOException("Logcat stat returned no result");
+                        if (!size.ok || ContinuousLogcatRecorder.MISSING_SIZE.equals(size.output.trim())) {
+                            if (!size.ok && !size.output.isEmpty()) {
+                                String diagnostic = (size.error == null ? "" : size.error + "\n") + size.output.trim();
+                                size = CommandResult.failure("", diagnostic, size.exitCode);
+                            }
+                            applyCollectorResult(probe, size, false);
+                            records.add(probe);
+                            continue;
+                        }
+                        bound = Long.parseLong(size.output.trim());
+                        command = ContinuousLogcatRecorder.snapshotCommand(bound);
+                    } catch (Exception error) {
+                        progress.check();
+                        probe.status = "error";
+                        java.io.StringWriter trace = new java.io.StringWriter();
+                        error.printStackTrace(new java.io.PrintWriter(trace));
+                        probe.error = trace.toString();
+                        records.add(probe);
+                        continue;
+                    }
+                    progress.stage(collector.entry, Math.addExact(progress.bytes, bound));
                 }
                 SourceRecord record = new SourceRecord(
                         "system", collector.entry, collector.entry, bound);
